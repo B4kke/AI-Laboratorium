@@ -4,6 +4,13 @@
 
 Build the laboratory vertically. Each milestone should produce one end-to-end capability that can be demonstrated and measured rather than a large amount of disconnected framework code.
 
+The product must have two complementary entry points from early development:
+
+1. **Playground:** fast 1v1 duels, built-in games and natural-language arena creation.
+2. **Laboratory:** repeated evaluation, evolution, lineage, holdouts and research-grade analysis.
+
+Both paths use the same arena/event/evaluation engine. Playground is not a throwaway demo.
+
 ## P0 — Foundation contracts
 
 **Goal:** establish a stable core that later UI and arenas can trust.
@@ -35,6 +42,7 @@ Implement typed contracts for:
 - Evaluation
 - LineageEdge
 - ProviderSnapshot
+- ArenaSpec / generated arena version
 
 Use runtime validation at external/untrusted boundaries.
 
@@ -121,23 +129,102 @@ Implement:
 
 **P1 acceptance:** run 10+ generations, produce a lineage and demonstrate champion vs baseline with uncertainty.
 
+## P1.5 — Playground and AI Arena Builder
+
+**Goal:** make the engine useful for spontaneous two-agent experiments before the user needs to configure evolution.
+
+### P1.5.1 Built-in Quick Duels
+
+Ship a small set of versioned 1v1 templates using the normal arena engine:
+
+- Prisoner's Dilemma
+- trust/betrayal
+- negotiation over fixed resources
+- auction
+- bluff/truth
+- survival resource split
+- coordination
+
+The user selects Model/Agent A, Model/Agent B and presses **Start duel**.
+
+### P1.5.2 ArenaSpec DSL
+
+Implement a constrained declarative `ArenaSpec` with engine-owned operators for:
+
+- roles
+- initial state/resources
+- public/private information
+- legal actions
+- communication
+- turn order
+- transitions
+- terminal conditions
+- scoring
+- randomness
+- budgets
+
+Model-generated executable code is explicitly out of scope. Generated specs are data interpreted by trusted runtime code.
+
+### P1.5.3 Natural-language Arena Designer
+
+Allow the user to type a game idea in normal language. An Arena Designer model produces an `ArenaSpec` candidate.
+
+Before execution:
+
+1. schema validate
+2. semantic validate
+3. run scripted/random-policy lint simulations
+4. render a readable rules preview
+5. only then allow real LLM agents to enter the arena
+
+### P1.5.4 Duel escalation
+
+After a duel, support:
+
+- run again/new seed
+- swap sides
+- Best of N
+- model/agent replacement
+- save as template
+- compare
+- **Evolve this setup**
+
+This establishes the intended progression:
+
+```text
+idea -> duel -> repeated test -> benchmark -> evolution
+```
+
+**P1.5 acceptance:** from a phone-sized viewport, a user can type a novel two-agent game, receive readable validated rules, run the duel, watch it live, inspect the winner and replay it without reading JSON.
+
 ## P2 — Web product / observability
 
 **Goal:** make the lab usable without terminal/log inspection.
 
-### P2.1 Experiment dashboard
+### P2.1 Playground / home
+
+The landing experience should expose:
+
+- “Describe the game” input
+- Quick Duel templates
+- Model/Agent A vs Model/Agent B selectors
+- recent duels/experiments
+
+Do not make the research dashboard the only entry point.
+
+### P2.2 Experiment dashboard
 
 Use Next.js + shadcn/ui. Apply dashboard information hierarchy rather than generic admin-template layout.
 
-### P2.2 Experiment builder
+### P2.3 Experiment builder
 
 Start with minimal duel options; advanced configuration can expand later.
 
-### P2.3 Live event narrative
+### P2.4 Live event narrative
 
 Use AI Elements for AI-generated Markdown surfaces. Render canonical engine facts separately from agent/evaluator text.
 
-### P2.4 Agent inspector
+### P2.5 Agent inspector
 
 Tabs:
 
@@ -149,15 +236,15 @@ Tabs:
 - evaluation
 - lineage
 
-### P2.5 Lineage view
+### P2.6 Lineage view
 
 Interactive graph + mobile focused ancestry path.
 
-### P2.6 Replay
+### P2.7 Replay
 
 State-based step/play/jump replay from event log.
 
-**P2 acceptance:** user can create, run, watch, inspect and replay an experiment from a phone-sized viewport.
+**P2 acceptance:** user can create, run, watch, inspect and replay both a simple duel and an evolutionary experiment from a phone-sized viewport.
 
 ## P3 — Reporting and analysis
 
@@ -187,6 +274,10 @@ HTML/print-based deterministic export with run provenance.
 ### P3.5 Comparison reports
 
 Support experiment A/B and champion/baseline comparisons.
+
+### P3.6 Duel reports
+
+One-off duels should generate a lightweight report; Best-of-N/benchmark mode should use statistical comparison reporting and PDF export.
 
 **P3 acceptance:** a completed run can generate a report that remains unchanged even if the live experiment data later evolves.
 
@@ -300,7 +391,7 @@ Create monorepo skeleton and CI. No elaborate UI yet.
 
 ### TASK-002 — Domain contracts
 
-Implement versioned schemas and IDs. Add contract tests.
+Implement versioned schemas and IDs. Add contract tests, including an initial `ArenaSpec` contract.
 
 ### TASK-003 — Event primitives
 
@@ -334,26 +425,41 @@ Re-read current NVIDIA docs; implement only verified endpoint/capability behavio
 
 Re-read current Zen docs/model metadata; support free-only policy without silent paid fallback.
 
-### TASK-011 — First web vertical slice
+### TASK-011 — First web vertical slice / Quick Duel
 
-Create experiment -> start run -> watch readable events -> inspect result.
+Create Playground -> select A/B -> choose built-in duel -> start -> watch readable events -> inspect result -> replay.
 
-### TASK-012 — Mobile verification
+This should be the first visible product experience, not a giant dashboard.
 
-Verify narrow viewport, touch behavior and no overflow before expanding the dashboard.
+### TASK-012 — ArenaSpec validator
+
+Implement declarative arena schema, semantic validation and scripted/random-policy lint simulation. No model-generated code execution.
+
+### TASK-013 — Natural-language Arena Designer
+
+Prompt -> ArenaSpec candidate -> validation -> readable rules preview -> run. Persist originating prompt, designer model snapshot and arena version.
+
+### TASK-014 — Duel escalation
+
+Add new seed, side swap, Best-of-N, save template, compare and `Evolve this setup`.
+
+### TASK-015 — Mobile verification
+
+Verify Playground and live duel at narrow viewport, touch behavior and no overflow before expanding the dashboard.
 
 ## Do not start yet
 
 Until the P1 loop works, avoid:
 
 - giant economic simulation
-- dozens of arenas
+- dozens of hand-built arenas
 - sophisticated 3D visualization
 - Kubernetes/microservice sprawl
 - custom auth complexity
 - model fine-tuning
 - vector DB because «AI project»
 - token-level chain-of-thought storage
+- arbitrary model-generated server code for arenas
 
 ## First milestone definition
 
@@ -361,4 +467,4 @@ The first milestone is not «the website looks cool».
 
 It is:
 
-> A reproducible seeded experiment can run multiple generations, evolve bounded `SOUL`/memory snapshots, promote a champion using repeated evaluation, replay its history, and expose all of this through one simple mobile-friendly web flow.
+> A user can run a simple seeded two-agent duel from a mobile-friendly web flow, watch and replay it in readable form; the same underlying engine can run multiple generations, evolve bounded `SOUL`/memory snapshots, promote a champion using repeated evaluation, and accept a validated natural-language-generated ArenaSpec without executing arbitrary generated code.
