@@ -6,7 +6,12 @@ The web app should make a complex experiment understandable without forcing the 
 
 The default experience is **live narrative + visual state + metrics**, with raw data available as an expert/export layer.
 
+The product must support both a simple “play two AIs against each other” experience and advanced evolutionary studies. A new user should not need to understand populations, mutation or holdouts before running something interesting.
+
 ## Main navigation
+
+### Playground
+Fast entry point for 1v1 experiments. Choose two models/agents and a built-in duel, or describe a game in natural language and let the Arena Designer create a validated ruleset.
 
 ### Dashboard
 Shows active experiments, recent champions, failures, provider status, queue depth and notable changes.
@@ -28,6 +33,68 @@ Generated experiment analyses, comparisons and PDF exports.
 
 ### Providers
 Model availability, capabilities, quotas/rate state and recent latency/error observations.
+
+## Playground / Quick Duel
+
+The home experience should expose the shortest path to value:
+
+```text
+What do you want to test?
+┌──────────────────────────────────────────────────────┐
+│ "Lag en lek hvor to AI-er må forhandle om ..."      │
+└──────────────────────────────────────────────────────┘
+[ Create duel ]
+
+Quick starts
+[ Prisoner's Dilemma ] [ Negotiation ] [ Auction ]
+[ Bluff ]              [ Survival ]    [ Trust ]
+
+Agent/Model A                     Agent/Model B
+[ NVIDIA/Zen model or champion ] [ NVIDIA/Zen model or champion ]
+```
+
+Built-in duels should be runnable with minimal configuration. The user can optionally set agent names, a short role/personality instruction, a saved `SOUL.md` preset and memory on/off.
+
+### Describe the game
+
+Natural-language input is converted by an Arena Designer into a constrained `ArenaSpec`, validated and then rendered back as readable rules.
+
+The preview should read like a game sheet, for example:
+
+**Market Crash — 20 rounds**
+
+- Both agents begin with 1,000 credits.
+- One role receives a private warning about the crash.
+- Each turn allows BUY, SELL, HOLD and one message.
+- The crash happens on a seeded round between 10 and 15.
+- Highest terminal net worth wins.
+
+Primary buttons:
+
+- **Run duel**
+- Edit idea
+- Advanced rules
+
+Do not make “inspect JSON” part of the normal flow.
+
+### Post-duel actions
+
+After any match expose:
+
+- Run again / new seed
+- Swap sides
+- Best of N
+- Change A/B model or agent
+- Save as template
+- Compare
+- Generate report
+- **Evolve this setup**
+
+This creates a natural product ladder from curiosity to research:
+
+```text
+idea -> duel -> repeated test -> benchmark -> evolution
+```
 
 ## Experiment builder
 
@@ -70,6 +137,28 @@ Desktop layout:
 ```
 
 Mobile layout stacks these surfaces with a persistent compact experiment header and tabs for Live / Agents / Metrics / Lineage.
+
+### Simplified 1v1 live view
+
+A Quick Duel should use a lighter presentation than a population experiment:
+
+```text
+┌──────────────────────┬──────────────────────┐
+│ Agent A              │ Agent B              │
+│ model / score/state  │ model / score/state  │
+├──────────────────────┴──────────────────────┤
+│            World / round state              │
+├─────────────────────────────────────────────┤
+│ readable conversation + action timeline     │
+│ A offered ...                               │
+│ B replied ...                               │
+│ A chose SELL ...                            │
+├─────────────────────────────────────────────┤
+│ Round 8/20       [pause view] [step] [speed]│
+└─────────────────────────────────────────────┘
+```
+
+On mobile prioritize current state, latest interaction, compact A/B status, timeline, then expandable decision traces.
 
 ## Readable event stream
 
