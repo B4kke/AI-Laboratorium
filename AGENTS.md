@@ -13,11 +13,14 @@ Denne filen er prosjektets arbeidskontrakt for GPT Work, Codex og andre kodeagen
 7. `docs/05-reporting-and-analysis.md`
 8. `docs/06-security-and-experiment-integrity.md`
 9. `docs/07-roadmap-and-task-queue.md`
-10. denne filen på nytt før større arkitekturvalg
+10. `docs/08-playground-and-ai-arena-builder.md`
+11. denne filen på nytt før større arkitekturvalg
 
 ## Prosjektmål
 
 Bygg et avansert evolusjonært multi-agent-laboratorium der agenters eksplisitte strategi, `SOUL.md`, memory-arkitektur og verktøypolicy kan selekteres og muteres over generasjoner. Plattformen skal være forskningsmessig etterprøvbar, visuelt forståelig og brukbar fra mobil.
+
+Samtidig skal produktet ha en lavterskel Playground: brukeren skal kunne velge to modeller og en ferdig duell, eller beskrive en «lek» med vanlig språk og få AI-en til å lage en validert arena som kan kjøres umiddelbart. En enkel duell skal kunne oppgraderes til Best-of-N, benchmark eller full evolusjon uten å bytte motor.
 
 ## Ufravikelige designregler
 
@@ -30,6 +33,8 @@ Bygg et avansert evolusjonært multi-agent-laboratorium der agenters eksplisitte
 - Champion-status krever holdout-evaluering og gjentatte trials; én heldig kamp er aldri nok.
 - UI skal aldri kreve at brukeren leser JSON for å forstå hva som skjer.
 - Mobil er en first-class target, ikke en senere nedskalering.
+- AI-genererte arenaer skal beskrives gjennom en begrenset, versjonert `ArenaSpec`/DSL. Modellgenerert kode skal aldri `eval`-es eller kjøres direkte som serverkode.
+- En Playground-duell og et evolusjonseksperiment skal bruke samme arena-, event- og replay-primitiver slik at «idea -> duel -> benchmark -> evolution» er en ekte produktflyt.
 
 ## Teknisk retning
 
@@ -116,7 +121,10 @@ Minimumskrav etter hvert som kode kommer inn:
 - property-based tests for invariants i evolution/arena-state der egnet
 - seeded simulation tests
 - integration tests for provider adapters med mocked responses
+- schema/semantic tests for AI-generated `ArenaSpec`
+- scripted/random-policy lint runs for generated arenas before real LLM execution
 - end-to-end smoke for create experiment -> run -> live events -> result -> report
+- end-to-end smoke for natural-language game -> rules preview -> duel -> replay
 - mobile/narrow viewport browser verification
 - statistical regression tests med toleranser, ikke skjøre eksakte floats
 
