@@ -1,64 +1,141 @@
 # AI-Laboratorium
 
-AI-Laboratorium er en avansert, webbasert plattform for å kjøre, observere og analysere evolusjonære multi-agent-eksperimenter med språkmodeller.
+AI-Laboratorium er et norsk, webbasert laboratorium for reproduserbare AI-dueller og evolusjonære multi-agent-eksperimenter. To agenter kan konkurrere i versjonerte arenaer, mens hele forsøket lagres som en ordnet hendelseslogg som kan spilles av, inspiseres og eksporteres.
 
-Målet er ikke bare å la to modeller «spille mot hverandre», men å bygge et reproducerbart laboratorium der agent-strategier kan selekteres, muteres, krysses, testes og sammenlignes over mange generasjoner. Agentenes evolverbare lag kan blant annet bestå av `SOUL.md`, strukturert langtidshukommelse, strategiregler og verktøypolicyer, mens selve basemodellen kan holdes konstant.
+Prosjektet er en deployklar vertikal MVP. Det kan kjøres helt uten API-nøkler med deterministiske, lokale referanseagenter. NVIDIA NIM og OpenCode Zen kan aktiveres som valgfrie serverbaserte modelltilbydere.
 
-## Produktmål
+## Dette virker nå
 
-Plattformen skal kunne:
+- norsk, mobiltilpasset laboratorium for hurtigduell
+- sju innebygde arenaer: fangens dilemma, ressursforhandling, auksjon, tillit, bløff, overlevelse og koordinering
+- sikker Arenadesigner fra norsk fritekst, med lokal mal eller valgfri språkmodell
+- streng og versjonert `ArenaSpec` uten modellgenerert kode
+- append-only hendelseslogg, deterministisk replay og stabilt fingeravtrykk
+- strukturert decision trace med handling, observasjon, mål, kort begrunnelse og sikkerhet – aldri skjult tankerekke
+- provider-abstraksjon for lokale baselines, NVIDIA NIM og OpenCode Zen
+- eksplisitt «kun gratis»-policy med dynamisk modelloppdagelse
+- ti-generasjons evolusjonsløp med elitisme, mutasjon, fitness, lineage og 95 % Wilson-intervall
+- nedlastbare rapporter som PDF, HTML og JSON, beskyttet av kortlevde serverbevis
+- helseendepunkt, strukturerte runtime-logger, Vercel Analytics og Speed Insights
+- strømbegrenset input, kostvektet ratebegrensning og samtidighetsvern på dyre API-er
+- CI med lint, streng TypeScript, automatiserte tester og produksjonsbygg
+- selvstendig Docker-image for Render eller annen containerplattform
 
-- opprette arenaer og eksperimenter med 2–N agenter
-- kjøre generasjoner med seleksjon, mutasjon, crossover og hall-of-fame
-- bruke flere LLM-leverandører gjennom en felles provider-adapter
-- bruke NVIDIA NIM som hovedleverandør og OpenCode Zen som sekundær/fallback, med runtime model discovery fremfor hardkodede modellister
-- vise live hendelser i lesbar tekst på desktop og mobil
-- vise agentens handling, observasjon, eksplisitte beslutningsbegrunnelse, confidence, verktøybruk og endringer i `SOUL.md`/memory uten å forsøke å eksponere privat chain-of-thought
-- visualisere lineage, fitness, Elo/Glicko-lignende rating, Pareto-front, ressursutvikling og arena-state
-- replaye hele kamper/generasjoner deterministisk der miljøet tillater det
-- generere analyser og nedlastbare rapporter, inkludert PDF
-- eksportere rådata for forskning uten at hoved-UI-et blir en JSON-viewer
-- kjøres mobilvennlig som en moderne webapplikasjon
-- kunne deployes på Vercel eller Render uten å låse domenelogikken til én host
+## Kom i gang
 
-## Første prinsipper
+Krav: Node.js 24 og pnpm 11.19.
 
-1. **Reproduserbarhet foran spektakel.** Seed, modell, prompt-/genomversjon, arena-versjon og evaluator skal kunne spores.
-2. **Ingen permanent sletting av tapere.** En agent kan elimineres fra populasjonen, men historiske snapshots og lineage beholdes for analyse.
-3. **Fitness er fler-dimensjonal.** En enkelt score skal ikke få lov til å definere «best» alene.
-4. **Holdout-evaluering.** Champion må testes på miljøer og seeds den ikke har evolvert direkte mot.
-5. **Observerbart, men ikke rå chain-of-thought.** Produktet viser strukturerte decision traces og handlinger, ikke skjult intern resonnering.
-6. **Sandbox først.** Agenten får bare endre sitt eget virtuelle genom/minne gjennom eksplisitte API-er; ikke host-filsystem, evaluator eller andre agenters state.
-7. **Provider-uavhengighet.** Arena- og evolusjonsmotoren skal ikke kjenne NVIDIA/OpenCode-spesifikke detaljer.
-8. **Statistikk må kunne etterprøves.** Resultater skal inkludere usikkerhet, antall trials, seeds og metodikk.
-
-## Planlagt arkitektur
-
-```text
-apps/web                 Next.js web UI / API surface
-packages/arena           arena-regler og world state
-packages/evolution       seleksjon, mutation, crossover, lineage
-packages/agents          agent runtime, genome og memory contracts
-packages/providers       NVIDIA NIM / OpenCode Zen adapters
-packages/evaluation      fitness, ratings, holdouts, statistics
-packages/events          typed event log + readable projection
-packages/reports         analysis/report/PDF pipeline
-packages/db              persistence contracts / migrations
-workers/runner           langvarige experiment workers
+```bash
+corepack enable
+pnpm install --frozen-lockfile
+pnpm dev
 ```
 
-## Foundation plan
+Åpne `http://localhost:3000`. Lokale baselines er tilgjengelige med én gang.
 
-Les i denne rekkefølgen:
+Kopier `.env.example` til `.env.local` hvis du vil bruke eksterne modeller. Hemmeligheter skal aldri legges i Git.
 
-1. [`AGENTS.md`](AGENTS.md) — arbeidskontrakt for GPT Work/Codex
-2. [`docs/00-project-charter.md`](docs/00-project-charter.md) — mål, forskningsspørsmål og scope
-3. [`docs/01-system-architecture.md`](docs/01-system-architecture.md) — control/execution/data plane, event store og runtime
-4. [`docs/02-evolution-and-evaluation.md`](docs/02-evolution-and-evaluation.md) — genome, memory, seleksjon, mutation, holdout og statistikk
-5. [`docs/03-product-ui-and-observability.md`](docs/03-product-ui-and-observability.md) — mobil UI, live arena, decision traces og lineage
-6. [`docs/04-providers-runtime-and-deployment.md`](docs/04-providers-runtime-and-deployment.md) — NVIDIA NIM, OpenCode Zen, free-only policy og Render/Vercel
-7. [`docs/05-reporting-and-analysis.md`](docs/05-reporting-and-analysis.md) — analyser, rapporter og PDF
-8. [`docs/06-security-and-experiment-integrity.md`](docs/06-security-and-experiment-integrity.md) — sandbox, evaluator-integritet og holdout-secrecy
-9. [`docs/07-roadmap-and-task-queue.md`](docs/07-roadmap-and-task-queue.md) — P0–P6 og konkret TASK-001 → TASK-012
+```bash
+cp .env.example .env.local
+```
 
-Første milepæl er eksplisitt definert som et **reproduserbart multi-generation vertical slice**, ikke bare en pen nettside.
+## Providers og gratispolicy
+
+| Provider | Miljøvariabel | Gratispolicy |
+|---|---|---|
+| Lokale baselines | ingen | alltid lokal og gratis |
+| OpenCode Zen | `OPENCODE_ZEN_API_KEY` | bare katalog-ID-er som ender på `-free` vises i free-only-modus |
+| NVIDIA NIM | `NVIDIA_API_KEY` | modell-ID må også stå i `NVIDIA_CONFIRMED_FREE_MODELS` |
+
+NVIDIA sitt `/models`-endepunkt oppgir ikke pris. Derfor behandles ingen NIM-modell som gratis uten en eksplisitt, kommaseparert allowlist i runtime-miljøet. Vanlig `deepseek-v4-flash` hos OpenCode Zen behandles ikke som gratis; den eksplisitte `-free`-varianten gjør det.
+
+Alle API-nøkler leses kun på serveren. Nettleseren mottar bare providerstatus og bekreftede gratis-modeller. Når en ekstern provider-nøkkel er konfigurert, må `AI_LAB_ACCESS_TOKEN` også settes til en tilfeldig verdi på minst 32 tegn. Godkjente brukere skriver denne i feltet «Tilgang til eksterne modeller»; verdien holdes bare i fanens minne og sendes som Bearer-header.
+
+`REPORT_SIGNING_SECRET` er påkrevd i produksjon, også når bare lokale baselines brukes. Den signerer en kortlevd digest av det eksakte serverresultatet, slik at rapportendepunktet ikke kan produsere en offisiell rapport fra et fabrikert klientresultat.
+
+## Kvalitetssperrer
+
+```bash
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+```
+
+Kjør alt i samme rekkefølge med:
+
+```bash
+pnpm verify
+```
+
+Et komplett lokalt evolusjonsløp kan også kjøres uten webgrensesnitt:
+
+```bash
+pnpm evolve:demo
+```
+
+## Arkitektur
+
+| Område | Ansvar |
+|---|---|
+| `apps/web` | Next.js App Router, norsk UI, API-ruter og observabilitet |
+| `packages/domain` | versjonerte Zod-kontrakter og entitets-ID-er |
+| `packages/arena` | arenaer, semantisk validering, designer og duellmotor |
+| `packages/events` | typede hendelser, append-only store og lesbar replay-projeksjon |
+| `packages/providers` | provider-policy, modelloppdagelse, retries og circuit breaker |
+| `packages/agents` | uforanderlige genomer, mutasjoner, diff og begrenset minne |
+| `packages/evaluation` | Elo, fitness og usikkerhetsintervaller |
+| `packages/evolution` | generasjoner, elitisme, mutasjon og lineage |
+| `packages/reports` | etterprøvbare PDF-, HTML- og JSON-rapporter |
+| `workers/runner` | kjørbar ti-generasjons demo |
+
+## API
+
+| Rute | Metode | Formål |
+|---|---|---|
+| `/api/health` | `GET` | deploy- og helsesjekk |
+| `/api/providers` | `GET` | serverfiltrert provider- og modellkatalog |
+| `/api/arenas` | `GET` | versjonerte innebygde arenaer |
+| `/api/arena/design` | `POST` | lag og valider en arena fra norsk fritekst |
+| `/api/duels` | `POST` | kjør en seedet Quick Duel |
+| `/api/evolution` | `POST` | kjør et avgrenset evolusjonsløp |
+| `/api/reports/duel` | `POST` | eksporter PDF, HTML eller JSON |
+
+Alle skriveendepunkter har inkrementelle bytegrenser, runtime-validering, per-klient/global rategrense og samtidighetsvern. Eksterne dueller har i tillegg et hardt budsjett på 16 modellbeslutninger per kjøring. Evolusjon er begrenset til 120 dueller per synkron jobb, og rapporter krever et serverutstedt resultatbevis.
+
+## Deploy på Vercel
+
+1. Importer GitHub-repositoriet i Vercel.
+2. Velg `apps/web` som **Root Directory**. Vercel oppdager pnpm-workspace og Next.js.
+3. Behold installasjonskommandoen `pnpm install --frozen-lockfile` og byggkommandoen `pnpm build`.
+4. Opprett `REPORT_SIGNING_SECRET` med minst 32 tilfeldige tegn i Vercel Project Settings, aldri som `NEXT_PUBLIC_*`.
+5. Hvis eksterne providere aktiveres, legg også inn provider-nøkkelen og en separat `AI_LAB_ACCESS_TOKEN` med minst 32 tilfeldige tegn.
+6. Aktiver Vercel Firewall-ratebegrensning for offentlige API-ruter hvis produksjonen kan skalere til flere instanser.
+7. Deploy preview-branchen og kontroller at `/api/health` svarer `200` og `status: "klar"` før promotering.
+
+Appen er fullt funksjonell uten provider-hemmeligheter. Git-integrasjon oppretter automatisk preview-deploy for pull requests, mens `.github/workflows/ci.yml` må være grønn før merge.
+
+## Deploy på Render eller med Docker
+
+`Dockerfile` bygger Next.js standalone-output. På Render kan `render.yaml` brukes som Blueprint; Blueprinten genererer både rapport- og tilgangshemmeligheten automatisk. Containeren lytter på `PORT` og bruker `/api/health` som helsesjekk.
+
+```bash
+docker build -t ai-laboratorium .
+docker run --rm -p 3000:3000 \
+  -e REPORT_SIGNING_SECRET="$(openssl rand -hex 32)" \
+  ai-laboratorium
+```
+
+## Driftsgrenser i denne MVP-en
+
+- Quick Duel og evolusjon returnerer komplette, eksporterbare snapshots, men historikk er ikke koblet til en permanent database ennå.
+- Eksterne modellkall er avhengige av providerens tilgjengelighet og kvote; motoren har total timeout, begrenset response-body, redirect-blokkering, retry, circuit breaker og en validert standardhandling ved beslutningsfeil.
+- Evolusjonspanelet bruker lokale baselines for å være raskt, gratis og reproduserbart i en serverless deploy.
+- Applikasjonsgrensene beskytter hver instans. En offentlig flerinstans-deploy skal i tillegg bruke distribuert ratebegrensning i Vercel Firewall, Render Edge/egnet proxy eller tilsvarende ingress.
+- Sentral loggdrain eller ekstern feilsporing må aktiveres i hostingkontoen hvis produksjonskravene krever varsling utenfor Vercels runtime-logger.
+
+Den detaljerte driftsprosedyren ligger i [`docs/09-deploy-og-drift.md`](docs/09-deploy-og-drift.md). Produkt-, arkitektur-, sikkerhets- og forskningsgrunnlaget ligger i resten av [`docs/`](docs/).
+
+## Lisens
+
+MIT.

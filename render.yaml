@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: ai-laboratorium
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PROVIDER_FREE_ONLY
+        value: "true"
+      - key: REPORT_SIGNING_SECRET
+        generateValue: true
+      - key: AI_LAB_ACCESS_TOKEN
+        generateValue: true

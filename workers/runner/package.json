@@ -1,0 +1,13 @@
+{
+  "name": "@ai-lab/runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "demo": "tsx src/demo.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-lab/evolution": "workspace:*"
+  }
+}

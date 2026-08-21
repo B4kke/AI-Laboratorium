@@ -1,0 +1,36 @@
+{
+  "name": "ai-laboratorium",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Et norsk laboratorium for reproduserbare AI-dueller og evolusjonære multi-agent-eksperimenter.",
+  "license": "MIT",
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @ai-lab/web dev",
+    "build": "pnpm -r --if-present build",
+    "start": "pnpm --filter @ai-lab/web start",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "eslint . --max-warnings=0",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "evolve:demo": "pnpm --filter @ai-lab/runner demo"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitest/coverage-v8": "^4.1.11",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.1",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.12",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.11"
+  }
+}
