@@ -47,4 +47,18 @@ packages/db              persistence contracts / migrations
 workers/runner           langvarige experiment workers
 ```
 
-Detaljert prosjektcharter, arkitektur, evolusjonsdesign, UI, providerstrategi, rapportering, sikkerhet og roadmap legges i `docs/` på plan-branchen.
+## Foundation plan
+
+Les i denne rekkefølgen:
+
+1. [`AGENTS.md`](AGENTS.md) — arbeidskontrakt for GPT Work/Codex
+2. [`docs/00-project-charter.md`](docs/00-project-charter.md) — mål, forskningsspørsmål og scope
+3. [`docs/01-system-architecture.md`](docs/01-system-architecture.md) — control/execution/data plane, event store og runtime
+4. [`docs/02-evolution-and-evaluation.md`](docs/02-evolution-and-evaluation.md) — genome, memory, seleksjon, mutation, holdout og statistikk
+5. [`docs/03-product-ui-and-observability.md`](docs/03-product-ui-and-observability.md) — mobil UI, live arena, decision traces og lineage
+6. [`docs/04-providers-runtime-and-deployment.md`](docs/04-providers-runtime-and-deployment.md) — NVIDIA NIM, OpenCode Zen, free-only policy og Render/Vercel
+7. [`docs/05-reporting-and-analysis.md`](docs/05-reporting-and-analysis.md) — analyser, rapporter og PDF
+8. [`docs/06-security-and-experiment-integrity.md`](docs/06-security-and-experiment-integrity.md) — sandbox, evaluator-integritet og holdout-secrecy
+9. [`docs/07-roadmap-and-task-queue.md`](docs/07-roadmap-and-task-queue.md) — P0–P6 og konkret TASK-001 → TASK-012
+
+Første milepæl er eksplisitt definert som et **reproduserbart multi-generation vertical slice**, ikke bare en pen nettside.
