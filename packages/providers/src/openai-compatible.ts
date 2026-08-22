@@ -69,6 +69,7 @@ export type OpenAICompatibleProviderOptions = {
   fetcher?: typeof fetch;
   id: Extract<ProviderId, "nvidia-nim" | "opencode-zen">;
   modelClassifier?: (id: string) => FreeClassification;
+  modelFilter?: (modelId: string) => boolean;
   policy: ProviderPolicy;
   requestTimeoutMs?: number;
 };
@@ -177,6 +178,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   readonly #confirmedFreeModelIds: ReadonlySet<string>;
   readonly #fetcher: typeof fetch;
   readonly #modelClassifier: ((id: string) => FreeClassification) | undefined;
+  readonly #modelFilter: ((modelId: string) => boolean) | undefined;
   readonly #policy: ProviderPolicy;
   readonly #requestTimeoutMs: number;
   #consecutiveFailures = 0;
@@ -195,6 +197,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     this.#confirmedFreeModelIds = options.confirmedFreeModelIds ?? new Set();
     this.#fetcher = options.fetcher ?? fetch;
     this.#modelClassifier = options.modelClassifier;
+    this.#modelFilter = options.modelFilter;
     this.#policy = options.policy;
     this.#requestTimeoutMs = options.requestTimeoutMs ?? 45_000;
   }
@@ -218,15 +221,17 @@ export class OpenAICompatibleProvider implements ModelProvider {
           modelResponseLimitBytes,
           false,
         );
-        const models = body.data.map(({ id }) => ({
-          displayName: id,
-          endpointFamily: "chat-completions" as const,
-          freeClassification: this.#classifyModel(id),
-          id,
-          providerId: this.id,
-          supportsStructuredOutput: false,
-          supportsTools: false,
-        }));
+        const models = body.data
+          .filter(({ id }) => this.#modelFilter?.(id) ?? true)
+          .map(({ id }) => ({
+            displayName: id,
+            endpointFamily: "chat-completions" as const,
+            freeClassification: this.#classifyModel(id),
+            id,
+            providerId: this.id,
+            supportsStructuredOutput: false,
+            supportsTools: false,
+          }));
         this.#modelCache = { expiresAt: Date.now() + 5 * 60_000, models };
         this.#modelFailure = undefined;
         return models;
@@ -269,11 +274,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
       "/chat/completions",
       {
         body: JSON.stringify({
-          max_tokens: 350,
+          max_tokens: 1_500,
           messages: [
             {
               content:
-                "Du er en arena-agent. Returner bare ett JSON-objekt med feltene actionId, message, observation, goal, rationale og confidence. Rationale skal være en kort brukerrettet begrunnelse, aldri skjult tankerekke.",
+                "Du er en arena-agent som spiller i egen karakter. Svar alltid som agenten selv, i førsteperson: la meldingen og begrunnelsen gjenspeile agentens navn, sjel, strategi og situasjonen i observasjonen. Vær konkret og personlig, aldri generisk. Returner likevel BARE ett JSON-objekt med feltene actionId, message, observation, goal, rationale og confidence — ingen tankerekke, forklaring eller tekst utenfor objektet.",
               role: "system",
             },
             { content: request.prompt, role: "user" },

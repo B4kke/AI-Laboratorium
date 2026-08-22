@@ -21,7 +21,11 @@ const tracedHelpers = realpathSync(tracedHelpersLink);
 
 // Node 24 velger package-exporten `module-sync`, mens Nexts tracer kan kopiere
 // bare CJS-filen. Kopier den låste direkteavhengigheten komplett til artifactet.
-cpSync(sourceHelpers, tracedHelpers, { force: true, recursive: true });
+// På Windows kan pnpm-junctions gjøre at begge stiene peker på samme fysiske
+// mappe; da er kopien allerede oppfylt og cpSync ville kastet ERR_FS_CP_EINVAL.
+if (sourceHelpers !== tracedHelpers) {
+  cpSync(sourceHelpers, tracedHelpers, { force: true, recursive: true });
+}
 cpSync(path.join(appRoot, ".next", "static"), path.join(standaloneAppRoot, ".next", "static"), {
   force: true,
   recursive: true,

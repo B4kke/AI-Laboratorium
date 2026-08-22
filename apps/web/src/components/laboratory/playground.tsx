@@ -86,9 +86,31 @@ type ArenaDraftResponse = {
   spec: ArenaSpec;
 };
 
-type DuelApiResponse = DuelResult & { reportToken: string };
+type DuelStreamMessage =
+  | { event: EventEnvelope; kind: "event" }
+  | { kind: "result"; reportToken: string; result: DuelResult }
+  | { kind: "error"; message: string };
 
 type PlaygroundProps = { initialArenas: readonly ArenaSpec[] };
+
+function buildLiveResult(
+  liveArena: ArenaSpec,
+  events: readonly EventEnvelope[],
+): DuelResult | null {
+  const first = events[0];
+  if (first === undefined) return null;
+  return {
+    arena: liveArena,
+    completedAt: first.occurredAt,
+    events: [...events],
+    matchId: first.matchId,
+    providerSnapshots: [],
+    replayFingerprint: "",
+    scores: { a: 0, b: 0 },
+    seed: first.seed,
+    winner: "draw",
+  };
+}
 
 export function Playground({ initialArenas }: PlaygroundProps) {
   const [mode, setMode] = useState<"duel" | "evolution">("duel");
@@ -112,6 +134,7 @@ export function Playground({ initialArenas }: PlaygroundProps) {
   const [providerAccessToken, setProviderAccessToken] = useState("");
   const [connectedAccessToken, setConnectedAccessToken] = useState("");
   const [reportToken, setReportToken] = useState<string | null>(null);
+  const [liveResult, setLiveResult] = useState<DuelResult | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -148,6 +171,7 @@ export function Playground({ initialArenas }: PlaygroundProps) {
     setReportToken(null);
     setSelectedEvent(null);
     setError(null);
+    setLiveResult(null);
   }
 
   async function runQuickDuel() {
@@ -155,9 +179,11 @@ export function Playground({ initialArenas }: PlaygroundProps) {
     setLoading(true);
     setError(null);
     setResult(null);
+    setReportToken(null);
     setSelectedEvent(null);
+    setLiveResult(null);
     try {
-      const response = await fetch("/api/duels", {
+      const response = await fetch("/api/duels/stream", {
         body: JSON.stringify({ agentA, agentB, arenaId: arena.id, seed, swapSides: false }),
         headers: {
           ...(connectedAccessToken.length === 0
@@ -167,16 +193,54 @@ export function Playground({ initialArenas }: PlaygroundProps) {
         },
         method: "POST",
       });
-      const duel = await readApiResponse<DuelApiResponse>(response);
-      const { reportToken: issuedReportToken, ...duelResult } = duel;
-      setResult(duelResult);
-      setReportToken(issuedReportToken);
-      setSelectedEvent(duelResult.events[0] ?? null);
-      setRunSerial((value) => value + 1);
+      await consumeDuelStream(response, arena);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Duellen kunne ikke kjøres");
     } finally {
       setLoading(false);
+      setLiveResult(null);
+    }
+  }
+
+  async function consumeDuelStream(response: Response, liveArena: ArenaSpec) {
+    if (!response.ok || response.body === null) {
+      let message = "Duellen kunne ikke kjøres";
+      try {
+        const data = (await response.json()) as { error?: unknown };
+        if (typeof data.error === "string") message = data.error;
+      } catch {
+        // Behold standardmeldingen når feilresponsen ikke er lesbar JSON.
+      }
+      throw new Error(message);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const events: EventEnvelope[] = [];
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let frameEnd = buffer.indexOf("\n\n");
+      while (frameEnd >= 0) {
+        const frame = buffer.slice(0, frameEnd);
+        buffer = buffer.slice(frameEnd + 2);
+        frameEnd = buffer.indexOf("\n\n");
+        const dataLine = frame.split("\n").find((line) => line.startsWith("data: "));
+        if (dataLine === undefined) continue;
+        const message = JSON.parse(dataLine.slice(6)) as DuelStreamMessage;
+        if (message.kind === "event") {
+          events.push(message.event);
+          setLiveResult(buildLiveResult(liveArena, events));
+        } else if (message.kind === "result") {
+          setResult(message.result);
+          setReportToken(message.reportToken);
+          setSelectedEvent(message.result.events[0] ?? null);
+          setRunSerial((value) => value + 1);
+        } else {
+          throw new Error(message.message);
+        }
+      }
     }
   }
 
@@ -396,9 +460,10 @@ export function Playground({ initialArenas }: PlaygroundProps) {
               agentB={agentB}
               arena={arena}
               key={`${result?.matchId ?? "preview"}-${runSerial}`}
+              live={liveResult !== null}
               loading={loading}
               onSelectEvent={setSelectedEvent}
-              result={result}
+              result={liveResult ?? result}
             />
 
             <Inspector

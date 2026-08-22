@@ -4,7 +4,11 @@ import { ProviderError } from "./errors";
 import type { DecisionRequest, ModelDescriptor, ProviderId } from "./types";
 
 export function parseDecisionTrace(content: string, request: DecisionRequest) {
-  const trimmed = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const trimmed = content
+    .trim()
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "");
   const firstBrace = trimmed.indexOf("{");
   const lastBrace = trimmed.lastIndexOf("}");
   const candidate =

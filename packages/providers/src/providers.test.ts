@@ -77,6 +77,23 @@ describe("providerpolicy", () => {
     });
   });
 
+  it("fjerner utdaterte NIM-modellfamilier fra katalogen", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        data: [
+          { id: "deepseek-r1" },
+          { id: "nvidia/nemotron-test" },
+          { id: "qwen3-coder-480b" },
+        ],
+        object: "list",
+      }),
+    );
+    const provider = createNvidiaNimProvider({ fetcher });
+    const models = await provider.listModels();
+
+    expect(models.map(({ id }) => id)).toEqual(["nvidia/nemotron-test"]);
+  });
+
   it("blokkerer redirects ved providergrensen", async () => {
     const fetcher = vi
       .fn<typeof fetch>()

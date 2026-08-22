@@ -32,6 +32,7 @@ type DuelStageProps = {
   agentA: AgentConfiguration;
   agentB: AgentConfiguration;
   arena: ArenaSpec;
+  live?: boolean;
   loading: boolean;
   onSelectEvent: (event: EventEnvelope) => void;
   result: DuelResult | null;
@@ -126,12 +127,13 @@ function EmptyStage({ agentA, agentB, arena, loading }: Omit<DuelStageProps, "on
 }
 
 export function DuelStage(props: DuelStageProps) {
-  const { agentA, agentB, onSelectEvent, result } = props;
+  const { agentA, agentB, live = false, onSelectEvent, result } = props;
   const [position, setPosition] = useState(() => (result === null ? 0 : Math.min(1, result.events.length)));
   const [playing, setPlaying] = useState(result !== null);
 
   useEffect(() => {
-    if (!playing || result === null || position >= result.events.length) return;
+    if (result === null || live) return;
+    if (!playing || position >= result.events.length) return;
     const timer = window.setInterval(() => {
       setPosition((current) => {
         if (current >= result.events.length) {
@@ -141,11 +143,13 @@ export function DuelStage(props: DuelStageProps) {
       });
     }, 620);
     return () => window.clearInterval(timer);
-  }, [playing, position, result]);
+  }, [live, playing, position, result]);
+
+  const effectivePosition = live ? (result?.events.length ?? position) : position;
 
   const visibleEvents = useMemo(
-    () => (result === null ? [] : result.events.slice(0, position)),
-    [position, result],
+    () => (result === null ? [] : result.events.slice(0, effectivePosition)),
+    [effectivePosition, result],
   );
   const projection = useMemo(() => projectDuel(visibleEvents), [visibleEvents]);
   const activeEvent = visibleEvents.at(-1);
@@ -162,15 +166,15 @@ export function DuelStage(props: DuelStageProps) {
     event?.type === "action.accepted"
       ? parseEventPayload(event.type, event.payload).actionLabel
       : undefined;
-  const finished = position >= result.events.length;
+  const finished = !live && effectivePosition >= result.events.length;
 
   return (
     <div className="laboratory-grid flex min-h-[680px] flex-col overflow-hidden rounded-2xl border border-white/8 bg-[#0d111b]/88">
       <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/7 px-5 py-5 sm:px-7">
         <div>
           <div className="mb-1.5 flex items-center gap-2 text-[10px] font-medium tracking-[0.14em] text-cyan-200 uppercase">
-            <Circle className={cn("size-2 fill-current", !finished && "live-pulse")} />
-            {finished ? "Avspilling fullført" : "Avspilling pågår"}
+            <Circle className={cn("size-2 fill-current", (!finished || live) && "live-pulse")} />
+            {live ? "Direkte strøm" : finished ? "Avspilling fullført" : "Avspilling pågår"}
           </div>
           <h2 className="text-xl font-semibold tracking-tight">{result.arena.title}</h2>
         </div>
@@ -220,7 +224,7 @@ export function DuelStage(props: DuelStageProps) {
         <div className="flex min-h-[360px] flex-col overflow-hidden rounded-xl border border-white/7 bg-black/15">
           <div className="flex items-center justify-between border-b border-white/7 px-4 py-3">
             <p className="text-xs font-semibold tracking-[0.12em] uppercase">Observerbar strøm</p>
-            <span className="font-mono text-[10px] text-muted-foreground">{position}/{result.events.length}</span>
+            <span className="font-mono text-[10px] text-muted-foreground">{effectivePosition}/{result.events.length}</span>
           </div>
           <ScrollArea className="h-[380px] flex-1 px-4 py-4">
             <div className="space-y-3 pr-3">
@@ -268,45 +272,52 @@ export function DuelStage(props: DuelStageProps) {
       </div>
 
       <div className="border-t border-white/7 bg-black/20 px-5 py-4 sm:px-7">
-        <Progress value={(position / result.events.length) * 100} className="mb-3 h-1" />
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-1">
-            <Button
-              aria-label="Start replay på nytt"
-              size="icon-sm"
-              variant="ghost"
-              onClick={() => { setPosition(1); setPlaying(true); }}
-            >
-              <RotateCcw />
-            </Button>
-            <Button
-              aria-label="Forrige hendelse"
-              size="icon-sm"
-              variant="ghost"
-              onClick={() => { setPlaying(false); setPosition((value) => Math.max(1, value - 1)); }}
-            >
-              <ChevronLeft />
-            </Button>
-            <Button
-              aria-label={playing ? "Sett replay på pause" : "Spill replay"}
-              size="icon"
-              onClick={() => setPlaying((value) => !value)}
-            >
-              {playing && !finished ? <Pause /> : <Play />}
-            </Button>
-            <Button
-              aria-label="Neste hendelse"
-              size="icon-sm"
-              variant="ghost"
-              onClick={() => { setPlaying(false); setPosition((value) => Math.min(result.events.length, value + 1)); }}
-            >
-              <ChevronRight />
-            </Button>
-          </div>
-          <p className="truncate font-mono text-[10px] text-muted-foreground">
-            {result.replayFingerprint}
+        <Progress value={(effectivePosition / result.events.length) * 100} className="mb-3 h-1" />
+        {live ? (
+          <p className="text-[10px] leading-4 text-cyan-200/80">
+            Hendelser vises etter hvert som motoren validerer dem. Avspilling og rapport låses opp
+            når duellen er fullført.
           </p>
-        </div>
+        ) : (
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-1">
+              <Button
+                aria-label="Start replay på nytt"
+                size="icon-sm"
+                variant="ghost"
+                onClick={() => { setPosition(1); setPlaying(true); }}
+              >
+                <RotateCcw />
+              </Button>
+              <Button
+                aria-label="Forrige hendelse"
+                size="icon-sm"
+                variant="ghost"
+                onClick={() => { setPlaying(false); setPosition((value) => Math.max(1, value - 1)); }}
+              >
+                <ChevronLeft />
+              </Button>
+              <Button
+                aria-label={playing ? "Sett replay på pause" : "Spill replay"}
+                size="icon"
+                onClick={() => setPlaying((value) => !value)}
+              >
+                {playing && !finished ? <Pause /> : <Play />}
+              </Button>
+              <Button
+                aria-label="Neste hendelse"
+                size="icon-sm"
+                variant="ghost"
+                onClick={() => { setPlaying(false); setPosition((value) => Math.min(result.events.length, value + 1)); }}
+              >
+                <ChevronRight />
+              </Button>
+            </div>
+            <p className="truncate font-mono text-[10px] text-muted-foreground">
+              {result.replayFingerprint}
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

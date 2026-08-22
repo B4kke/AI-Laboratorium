@@ -29,6 +29,7 @@ export type DecisionRequest = {
   observation: string;
   opponentLastAction?: string;
   prompt: string;
+  roleInstruction?: string;
   round: number;
   seed: string;
   strategy: AgentStrategy;

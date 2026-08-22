@@ -86,6 +86,77 @@ describe("runDuel", () => {
     expect(projectDuel(first.events)).toEqual(projectDuel(second.events));
   });
 
+  it("emitterer hver hendelse live via onEvent i samme rekkefølge som resultatet", async () => {
+    const emitted: string[] = [];
+    const result = await runDuel(request, registry, {
+      onEvent: (event) => emitted.push(`${event.sequence}:${event.type}`),
+    });
+    expect(emitted.length).toBe(result.events.length);
+    expect(emitted[0]).toBe("0:duel.created");
+    expect(emitted.at(-1)).toBe(`${result.events.length - 1}:duel.finished`);
+    expect(emitted).toEqual(result.events.map((event) => `${event.sequence}:${event.type}`));
+  });
+
+  it("leverer agentens sjel og navn inn i beslutningsforespørselen", async () => {
+    const captured: Array<{ prompt: string; roleInstruction?: string | undefined }> = [];
+    const capturingProvider = {
+      captureSnapshot: async (modelId: string) => ({
+        capturedAt: new Date().toISOString(),
+        endpointFamily: "chat-completions" as const,
+        freeClassification: "confirmed-free" as const,
+        id: `provider_test_${modelId}`,
+        modelId,
+        providerId: "opencode-zen" as const,
+        supportsStructuredOutput: false,
+        supportsTools: false,
+      }),
+      generateDecision: async (decisionRequest: {
+        allowedActions: ReadonlyArray<{ id: string }>;
+        observation: string;
+        prompt: string;
+        roleInstruction?: string;
+      }) => {
+        captured.push({ prompt: decisionRequest.prompt, roleInstruction: decisionRequest.roleInstruction });
+        return {
+          finishReason: "stop",
+          latencyMs: 1,
+          modelId: "test-free",
+          trace: {
+            actionId: decisionRequest.allowedActions[0]?.id ?? "",
+            confidence: 0.7,
+            goal: "teste",
+            message: "ok",
+            observation: decisionRequest.observation,
+            rationale: "sjeletest",
+          },
+          providerId: "opencode-zen" as const,
+          usage: {},
+        };
+      },
+      id: "opencode-zen",
+    } as unknown as ModelProvider;
+    await runDuel(
+      {
+        ...request,
+        agentA: { ...request.agentA, name: "Miranda", providerId: "opencode-zen" as const, roleInstruction: "Du er en mistenksom forretningskvinne." },
+        agentB: { ...request.agentB, providerId: "opencode-zen" as const },
+      },
+      new ProviderRegistry([capturingProvider]),
+    );
+    expect(captured.length).toBeGreaterThan(0);
+    const mirandaCalls = captured.filter((call) => call.prompt.includes("Miranda"));
+    expect(mirandaCalls.length).toBeGreaterThan(0);
+    expect(
+      mirandaCalls.every((call) => call.roleInstruction === "Du er en mistenksom forretningskvinne."),
+    ).toBe(true);
+    const firstMiranda = mirandaCalls[0];
+    expect(firstMiranda).toBeDefined();
+    expect(firstMiranda?.prompt).toContain("Du er agenten «Miranda»");
+    expect(firstMiranda?.prompt).toContain(
+      "Din sjel (SOUL.md): Du er en mistenksom forretningskvinne.",
+    );
+  });
+
   it("lekker ikke motstanderens private informasjon i observasjonen", async () => {
     const arena = {
       ...builtInArenas[0],

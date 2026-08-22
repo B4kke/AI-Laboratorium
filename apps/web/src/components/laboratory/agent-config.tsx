@@ -1,7 +1,7 @@
 "use client";
 
 import type { AgentConfiguration } from "@ai-lab/domain";
-import { Bot, CircleDot } from "lucide-react";
+import { Bot, CircleDot, Sparkles } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -12,6 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import type { ProviderCatalogEntry } from "@/lib/laboratory-types";
 import { cn } from "@/lib/utils";
 
@@ -140,6 +141,20 @@ export function AgentConfig({ accent, agent, label, onChange, providers }: Agent
             ))}
           </SelectContent>
         </Select>
+      </label>
+
+      <label className="grid gap-1.5 text-xs text-muted-foreground">
+        <span className="flex items-center gap-1.5">
+          <Sparkles className="size-3 text-amber-200" /> Sjel (SOUL.md)
+        </span>
+        <Textarea
+          aria-label={`${label}: sjel`}
+          className="min-h-20 resize-none text-xs"
+          maxLength={500}
+          onChange={(event) => onChange({ ...agent, roleInstruction: event.target.value })}
+          placeholder="F.eks: Du er en mistenksom forretningskvinne som belønner lojalitet og straffer svik hardt. Snakk kort og tørt."
+          value={agent.roleInstruction ?? ""}
+        />
       </label>
     </section>
   );

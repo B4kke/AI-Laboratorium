@@ -25,6 +25,7 @@ import { assertValidArenaSpec } from "./validation";
 
 export type RunDuelOptions = {
   clock?: () => Date;
+  onEvent?: (event: EventEnvelope) => void;
 };
 
 function resolveArena(request: DuelRequest): ArenaSpec {
@@ -107,12 +108,20 @@ function buildDecisionRequest(input: {
       ? {}
       : { opponentLastAction: input.lastOpponentAction }),
     prompt: [
+      `Du er agenten «${input.agent.name}». Ingen andre ser denne teksten — den former bare din karakter.`,
+      `Strategiprofil: ${input.agent.strategy}.`,
+      ...(input.agent.roleInstruction === undefined
+        ? []
+        : [`Din sjel (SOUL.md): ${input.agent.roleInstruction}`]),
       `Arena: ${input.arena.title}`,
       `Regler: ${input.arena.rules.join(" ")}`,
       `Observasjon: ${observation}`,
       `Lovlige handlinger: ${allowedActions.map((action) => `${action.id} (${action.label})`).join(", ")}.`,
-      "Velg én lovlig handling. Svar kort på norsk i det avtalte JSON-formatet.",
+      "Velg én lovlig handling. Svar kort på norsk i det avtalte JSON-formatet, med din egen stemme og dine egne motiver.",
     ].join("\n"),
+    ...(input.agent.roleInstruction === undefined
+      ? {}
+      : { roleInstruction: input.agent.roleInstruction }),
     round: input.round,
     seed: input.seed,
     strategy: input.agent.strategy,
@@ -157,6 +166,7 @@ export async function runDuel(
       ...(input.actorId === undefined ? {} : { actorId: input.actorId }),
     });
     events.push(event);
+    options.onEvent?.(event);
   };
 
   addEvent({
