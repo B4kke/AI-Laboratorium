@@ -2,7 +2,7 @@
 
 AI-Laboratorium er et norsk, webbasert laboratorium for reproduserbare AI-dueller og evolusjonære multi-agent-eksperimenter. To agenter kan konkurrere i versjonerte arenaer, mens hele forsøket lagres som en ordnet hendelseslogg som kan spilles av, inspiseres og eksporteres.
 
-Prosjektet er en deployklar vertikal MVP. Det kan kjøres helt uten API-nøkler med deterministiske, lokale referanseagenter. NVIDIA NIM og OpenCode Zen kan aktiveres som valgfrie serverbaserte modelltilbydere.
+Prosjektet er en vertikal laboratorieimplementasjon med to eksplisitt adskilte moduser: deterministiske kontrollbaselines for test og ekte NVIDIA NIM/OpenCode Zen-modeller for agentdialog og evolusjon. Kontrollbaselines presenteres aldri som AI-evolusjon.
 
 ## Dette virker nå
 
@@ -14,7 +14,11 @@ Prosjektet er en deployklar vertikal MVP. Det kan kjøres helt uten API-nøkler 
 - strukturert decision trace med handling, observasjon, mål, kort begrunnelse og sikkerhet – aldri skjult tankerekke
 - provider-abstraksjon for lokale baselines, NVIDIA NIM og OpenCode Zen
 - eksplisitt «kun gratis»-policy med dynamisk modelloppdagelse
-- ti-generasjons evolusjonsløp med elitisme, mutasjon, fitness, lineage og 95 % Wilson-intervall
+- persistent agentbibliotek med direkte «Agent N»-oppslag som binder modell, immutable snapshot, `SOUL.md`, virtuelle filer og versjonert minne
+- ekte agent-til-agent-dialog: hver replikk vises ordrett og føres inn i neste modellkall sammen med SOUL, minne og filer
+- købasert Evolution med 1–100 generasjoner, 2–100 agenter, sentral providerkonfigurasjon og valgfri modell/lagret agent per plass
+- modellgenerert, validert mutasjon av `SOUL.md`, øvrige agentfiler og minne med provenance, diff, lineage og retirement uten sletting
+- gjentatte sidebyttede trials, fitnessvektor, hall of fame, 95 % Wilson-intervall og forseglede holdouts før champion-promotering
 - nedlastbare rapporter som PDF, HTML og JSON, beskyttet av kortlevde serverbevis
 - helseendepunkt, strukturerte runtime-logger, Vercel Analytics og Speed Insights
 - strømbegrenset input, kostvektet ratebegrensning og samtidighetsvern på dyre API-er
@@ -31,9 +35,9 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Åpne `http://localhost:3000`. Lokale baselines er tilgjengelige med én gang.
+Åpne `http://localhost:3000`. Lokale, tydelig merkede kontrollbaselines er tilgjengelige med én gang. Ekte dueller krever en konfigurert provider. Agentbibliotek og Evolution krever PostgreSQL og en worker.
 
-Kopier `.env.example` til `.env.local` hvis du vil bruke eksterne modeller. Hemmeligheter skal aldri legges i Git.
+Kopier `.env.example` til `.env.local` og sett `DATABASE_URL` samt minst én provider hvis du vil bruke hele laboratoriet. Hemmeligheter skal aldri legges i Git.
 
 ```bash
 cp .env.example .env.local
@@ -50,6 +54,8 @@ cp .env.example .env.local
 NVIDIA sitt `/models`-endepunkt oppgir ikke pris. Derfor behandles ingen NIM-modell som gratis uten en eksplisitt, kommaseparert allowlist i runtime-miljøet. Vanlig `deepseek-v4-flash` hos OpenCode Zen behandles ikke som gratis; den eksplisitte `-free`-varianten gjør det.
 
 Alle API-nøkler leses kun på serveren. Nettleseren mottar bare providerstatus og bekreftede gratis-modeller. Når en ekstern provider-nøkkel er konfigurert, må `AI_LAB_ACCESS_TOKEN` også settes til en tilfeldig verdi på minst 32 tegn. Godkjente brukere skriver denne i feltet «Tilgang til eksterne modeller»; verdien holdes bare i fanens minne og sendes som Bearer-header.
+
+Provider-nøkkelen konfigureres én gang per web/worker-runtime og gjenbrukes av alle agentplasser. En kjøring kan tilordne opptil 100 forskjellige modeller uten å lagre eller skrive inn 100 kopier av samme API-nøkkel.
 
 `REPORT_SIGNING_SECRET` er påkrevd i produksjon, også når bare lokale baselines brukes. Den signerer en kortlevd digest av det eksakte serverresultatet, slik at rapportendepunktet ikke kan produsere en offisiell rapport fra et fabrikert klientresultat.
 
@@ -68,10 +74,10 @@ Kjør alt i samme rekkefølge med:
 pnpm verify
 ```
 
-Et komplett lokalt evolusjonsløp kan også kjøres uten webgrensesnitt:
+Start den persistente Evolution-workeren i en egen terminal:
 
 ```bash
-pnpm evolve:demo
+pnpm --filter @ai-lab/runner worker
 ```
 
 ## Arkitektur
@@ -84,10 +90,11 @@ pnpm evolve:demo
 | `packages/events` | typede hendelser, append-only store og lesbar replay-projeksjon |
 | `packages/providers` | provider-policy, modelloppdagelse, retries og circuit breaker |
 | `packages/agents` | uforanderlige genomer, mutasjoner, diff og begrenset minne |
+| `packages/db` | PostgreSQL-skjema, immutable agentsnapshots, dueller, events, lineage og Evolution-kø |
 | `packages/evaluation` | Elo, fitness og usikkerhetsintervaller |
 | `packages/evolution` | generasjoner, elitisme, mutasjon og lineage |
 | `packages/reports` | etterprøvbare PDF-, HTML- og JSON-rapporter |
-| `workers/runner` | kjørbar ti-generasjons demo |
+| `workers/runner` | langlivet køworker for ekte modelldueller, mutasjon og artefaktpersistens |
 
 ## API
 
@@ -96,12 +103,15 @@ pnpm evolve:demo
 | `/api/health` | `GET` | deploy- og helsesjekk |
 | `/api/providers` | `GET` | serverfiltrert provider- og modellkatalog |
 | `/api/arenas` | `GET` | versjonerte innebygde arenaer |
+| `/api/agents` | `GET`, `POST` | list, slå opp `?serialNumber=382`, eller opprett persistente agenter |
+| `/api/agents/[agentId]` | `GET` | hent nåværende eller navngitt snapshot med SOUL/minne/filer |
 | `/api/arena/design` | `POST` | lag og valider en arena fra norsk fritekst |
 | `/api/duels` | `POST` | kjør en seedet Quick Duel |
-| `/api/evolution` | `POST` | kjør et avgrenset evolusjonsløp |
+| `/api/evolution` | `POST` | valider og kølegg et persistent evolusjonsløp |
+| `/api/evolution/[jobId]` | `GET` | les køstatus, fremdrift og ferdig resultat |
 | `/api/reports/duel` | `POST` | eksporter PDF, HTML eller JSON |
 
-Alle skriveendepunkter har inkrementelle bytegrenser, runtime-validering, per-klient/global rategrense og samtidighetsvern. Eksterne dueller har i tillegg et hardt budsjett på 16 modellbeslutninger per kjøring. Evolusjon er begrenset til 120 dueller per synkron jobb, og rapporter krever et serverutstedt resultatbevis.
+Alle skriveendepunkter har inkrementelle bytegrenser, runtime-validering og per-klient/global rategrense. Eksterne Quick Duels har et hardt budsjett på 16 modellbeslutninger per kjøring. Evolution validerer et eksplisitt modellkallbudsjett før kølegging og kjører utenfor HTTP-levetiden. Rapporter krever et serverutstedt resultatbevis.
 
 ## Deploy på Vercel
 
@@ -113,11 +123,11 @@ Alle skriveendepunkter har inkrementelle bytegrenser, runtime-validering, per-kl
 6. Aktiver Vercel Firewall-ratebegrensning for offentlige API-ruter hvis produksjonen kan skalere til flere instanser.
 7. Deploy preview-branchen og kontroller at `/api/health` svarer `200` og `status: "klar"` før promotering.
 
-Appen er fullt funksjonell uten provider-hemmeligheter. Git-integrasjon oppretter automatisk preview-deploy for pull requests, mens `.github/workflows/ci.yml` må være grønn før merge.
+Uten provider-hemmeligheter er kontrollbaselines, replay og rapportlesing tilgjengelig, men ekte agentdialog og Evolution er med vilje sperret. En Vercel-deploy trenger PostgreSQL og en separat langlivet worker for hele produktflyten.
 
 ## Deploy på Render eller med Docker
 
-`Dockerfile` bygger Next.js standalone-output. På Render kan `render.yaml` brukes som Blueprint; Blueprinten genererer både rapport- og tilgangshemmeligheten automatisk. Containeren lytter på `PORT` og bruker `/api/health` som helsesjekk.
+`Dockerfile` bygger Next.js standalone-output, mens `Dockerfile.worker` kjører den langlivede Evolution-workeren. `render.yaml` oppretter web, PostgreSQL og worker, og kobler begge runtimes til samme `DATABASE_URL`. Blueprinten genererer rapport- og tilgangshemmeligheten automatisk; provider-nøkler fylles inn som secrets.
 
 ```bash
 docker build -t ai-laboratorium .
@@ -126,11 +136,12 @@ docker run --rm -p 3000:3000 \
   ai-laboratorium
 ```
 
-## Driftsgrenser i denne MVP-en
+## Driftsgrenser
 
-- Quick Duel og evolusjon returnerer komplette, eksporterbare snapshots, men historikk er ikke koblet til en permanent database ennå.
-- Eksterne modellkall er avhengige av providerens tilgjengelighet og kvote; motoren har total timeout, begrenset response-body, redirect-blokkering, retry, circuit breaker og en validert standardhandling ved beslutningsfeil.
-- Evolusjonspanelet bruker lokale baselines for å være raskt, gratis og reproduserbart i en serverless deploy.
+- Quick Duel kan kjøres uten database som et midlertidig forsøk; lagrede agenter, historikk og Evolution krever PostgreSQL.
+- Eksterne modellkall er avhengige av providerens tilgjengelighet og kvote; ved ugyldig eller feilet ekte modellrespons stopper duellen eksplisitt. UI-et viser aldri en fabrikkert standardreplikk som om den kom fra modellen.
+- Evolution bruker bare ekte, konfigurerte modellproviders. Scripted baselines er avgrenset til merkede kontroller og tester.
+- Store løp kan bruke betydelig kvote og tid. UI og API viser/validerer estimert antall modellkall, og workeren må dimensjoneres etter providerens faktiske rategrenser.
 - Applikasjonsgrensene beskytter hver instans. En offentlig flerinstans-deploy skal i tillegg bruke distribuert ratebegrensning i Vercel Firewall, Render Edge/egnet proxy eller tilsvarende ingress.
 - Sentral loggdrain eller ekstern feilsporing må aktiveres i hostingkontoen hvis produksjonskravene krever varsling utenfor Vercels runtime-logger.
 

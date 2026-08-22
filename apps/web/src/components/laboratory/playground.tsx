@@ -1,6 +1,12 @@
 "use client";
 
-import type { AgentConfiguration, ArenaSpec, DuelResult, EventEnvelope } from "@ai-lab/domain";
+import type {
+  AgentConfiguration,
+  AgentSnapshot,
+  ArenaSpec,
+  DuelResult,
+  EventEnvelope,
+} from "@ai-lab/domain";
 import { AlertTriangle, Beaker, CodeXml, Plus, ShieldCheck, Sparkles, Swords, X } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
@@ -22,6 +28,9 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import {
   readApiResponse,
+  type AgentDetailResponse,
+  type AgentLibraryResponse,
+  type CreateAgentResponse,
   type ProviderCatalogEntry,
   type ProviderCatalogResponse,
 } from "@/lib/laboratory-types";
@@ -69,6 +78,7 @@ const initialAgentA: AgentConfiguration = {
   modelId: "scripted-cooperative",
   name: "Astra",
   providerId: "mock",
+  soul: "Jeg er Astra. Jeg bygger tillit rolig, men krever samsvar mellom ord og handling.",
   strategy: "cooperative",
 };
 
@@ -77,6 +87,7 @@ const initialAgentB: AgentConfiguration = {
   modelId: "scripted-opportunist",
   name: "Nova",
   providerId: "mock",
+  soul: "Jeg er Nova. Jeg er skarp, opportunistisk og utfordrer løfter som ikke kan etterprøves.",
   strategy: "opportunist",
 };
 
@@ -92,6 +103,34 @@ type DuelStreamMessage =
   | { kind: "error"; message: string };
 
 type PlaygroundProps = { initialArenas: readonly ArenaSpec[] };
+
+function authorizationHeaders(token: string): Record<string, string> {
+  return token.length === 0 ? {} : { Authorization: `Bearer ${token}` };
+}
+
+function configurationFromSnapshot(snapshot: AgentSnapshot): AgentConfiguration {
+  return {
+    files: snapshot.genome.files,
+    genomeId: snapshot.genome.id,
+    id: snapshot.agentId,
+    memoryContext: snapshot.memory.items.map(({ category, content }) => ({ category, content })),
+    memoryId: snapshot.memory.id,
+    modelId: snapshot.modelId,
+    name: snapshot.name,
+    providerId: snapshot.providerId,
+    snapshotId: snapshot.id,
+    soul: snapshot.genome.soul,
+    strategy: snapshot.strategy,
+  };
+}
+
+function detachSnapshot(configuration: AgentConfiguration): AgentConfiguration {
+  const next = { ...configuration };
+  delete next.genomeId;
+  delete next.memoryId;
+  delete next.snapshotId;
+  return next;
+}
 
 function buildLiveResult(
   liveArena: ArenaSpec,
@@ -135,27 +174,62 @@ export function Playground({ initialArenas }: PlaygroundProps) {
   const [connectedAccessToken, setConnectedAccessToken] = useState("");
   const [reportToken, setReportToken] = useState<string | null>(null);
   const [liveResult, setLiveResult] = useState<DuelResult | null>(null);
+  const [savedAgents, setSavedAgents] = useState<AgentLibraryResponse["agents"]>([]);
+  const [agentPersistence, setAgentPersistence] =
+    useState<AgentLibraryResponse["persistence"]>("not-configured");
+  const [savingAgent, setSavingAgent] = useState<"a" | "b" | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
-    async function loadProviders() {
-      try {
-        const response = await fetch("/api/providers", {
-          headers:
-            connectedAccessToken.length === 0
-              ? {}
-              : { Authorization: `Bearer ${connectedAccessToken}` },
-          signal: controller.signal,
-        });
-        const catalog = await readApiResponse<ProviderCatalogResponse>(response);
-        if (catalog.providers.some(({ id }) => id === "mock")) setProviders(catalog.providers);
-      } catch (caught) {
-        if (!(caught instanceof DOMException && caught.name === "AbortError")) {
-          setProviders(initialProviders);
+    async function loadConfiguration() {
+      const headers = authorizationHeaders(connectedAccessToken);
+      const [providerResult, agentResult] = await Promise.allSettled([
+        fetch("/api/providers", { headers, signal: controller.signal }).then((response) =>
+          readApiResponse<ProviderCatalogResponse>(response),
+        ),
+        fetch("/api/agents", { headers, signal: controller.signal }).then((response) =>
+          readApiResponse<AgentLibraryResponse>(response),
+        ),
+      ]);
+      if (providerResult.status === "fulfilled") {
+        const catalog = providerResult.value;
+        if (catalog.providers.some(({ id }) => id === "mock")) {
+          setProviders(catalog.providers);
+          const remoteModel = catalog.providers
+            .filter(({ id }) => id !== "mock")
+            .flatMap(({ models }) => models)[0];
+          if (remoteModel !== undefined) {
+            setAgentA((current) =>
+              current.providerId !== "mock"
+                ? current
+                : {
+                    ...detachSnapshot(current),
+                    modelId: remoteModel.id,
+                    providerId: remoteModel.providerId,
+                    strategy: "adaptive",
+                  },
+            );
+            setAgentB((current) =>
+              current.providerId !== "mock"
+                ? current
+                : {
+                    ...detachSnapshot(current),
+                    modelId: remoteModel.id,
+                    providerId: remoteModel.providerId,
+                    strategy: "adaptive",
+                  },
+            );
+          }
         }
+      } else if (!(providerResult.reason instanceof DOMException && providerResult.reason.name === "AbortError")) {
+        setProviders(initialProviders);
+      }
+      if (agentResult.status === "fulfilled") {
+        setSavedAgents(agentResult.value.agents);
+        setAgentPersistence(agentResult.value.persistence);
       }
     }
-    void loadProviders();
+    void loadConfiguration();
     return () => controller.abort();
   }, [connectedAccessToken]);
 
@@ -172,6 +246,91 @@ export function Playground({ initialArenas }: PlaygroundProps) {
     setSelectedEvent(null);
     setError(null);
     setLiveResult(null);
+  }
+
+  async function refreshAgentLibrary() {
+    const response = await fetch("/api/agents", {
+      headers: authorizationHeaders(connectedAccessToken),
+    });
+    const library = await readApiResponse<AgentLibraryResponse>(response);
+    setSavedAgents(library.agents);
+    setAgentPersistence(library.persistence);
+  }
+
+  async function selectSavedAgent(side: "a" | "b", agentId: string | null) {
+    if (agentId === null) {
+      if (side === "a") setAgentA((current) => detachSnapshot(current));
+      else setAgentB((current) => detachSnapshot(current));
+      invalidateReplay();
+      return;
+    }
+    setError(null);
+    try {
+      const response = await fetch(`/api/agents/${agentId}`, {
+        headers: authorizationHeaders(connectedAccessToken),
+      });
+      const detail = await readApiResponse<AgentDetailResponse>(response);
+      if (side === "a") setAgentA(configurationFromSnapshot(detail.snapshot));
+      else setAgentB(configurationFromSnapshot(detail.snapshot));
+      invalidateReplay();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Agenten kunne ikke lastes");
+    }
+  }
+
+  async function selectAgentBySerial(side: "a" | "b", serialNumber: number) {
+    setError(null);
+    try {
+      const response = await fetch(`/api/agents?serialNumber=${serialNumber}`, {
+        headers: authorizationHeaders(connectedAccessToken),
+      });
+      const library = await readApiResponse<AgentLibraryResponse>(response);
+      const found = library.agents[0];
+      if (found === undefined) throw new Error(`Agent ${serialNumber} finnes ikke`);
+      setSavedAgents((current) => [
+        found,
+        ...current.filter(({ agentId }) => agentId !== found.agentId),
+      ]);
+      await selectSavedAgent(side, found.agentId);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : `Agent ${serialNumber} kunne ikke lastes`);
+    }
+  }
+
+  async function saveAgent(side: "a" | "b") {
+    const agent = side === "a" ? agentA : agentB;
+    setSavingAgent(side);
+    setError(null);
+    try {
+      const response = await fetch("/api/agents", {
+        body: JSON.stringify({
+          files: agent.files ?? [],
+          memory: agent.memoryContext ?? [],
+          modelId: agent.modelId,
+          name: agent.name,
+          providerId: agent.providerId,
+          soul: agent.soul,
+          strategy: agent.strategy,
+        }),
+        headers: {
+          ...authorizationHeaders(connectedAccessToken),
+          "Content-Type": "application/json",
+        },
+        method: "POST",
+      });
+      const created = await readApiResponse<CreateAgentResponse>(response);
+      setSavedAgents((current) => [
+        created.agent,
+        ...current.filter(({ agentId }) => agentId !== created.agent.agentId),
+      ]);
+      if (side === "a") setAgentA(configurationFromSnapshot(created.snapshot));
+      else setAgentB(configurationFromSnapshot(created.snapshot));
+      invalidateReplay();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Agenten kunne ikke lagres");
+    } finally {
+      setSavingAgent(null);
+    }
   }
 
   async function runQuickDuel() {
@@ -353,7 +512,13 @@ export function Playground({ initialArenas }: PlaygroundProps) {
         )}
 
         {mode === "evolution" ? (
-          <EvolutionPanel arenas={initialArenas} />
+          <EvolutionPanel
+            accessToken={connectedAccessToken}
+            arenas={initialArenas}
+            onAgentsChanged={refreshAgentLibrary}
+            providers={providers}
+            savedAgents={savedAgents}
+          />
         ) : arena === undefined ? (
           <p>Ingen arenaer er tilgjengelige.</p>
         ) : (
@@ -361,7 +526,7 @@ export function Playground({ initialArenas }: PlaygroundProps) {
             <aside className="glass-panel h-fit rounded-2xl border border-white/8 xl:sticky xl:top-20 xl:max-h-[calc(100vh-6rem)] xl:overflow-y-auto">
               <div className="border-b border-white/7 p-5">
                 <div className="flex items-center justify-between">
-                  <div><p className="text-sm font-semibold">Eksperimentoppsett</p><p className="mt-1 text-xs text-muted-foreground">Hurtigduell · deterministisk</p></div>
+                  <div><p className="text-sm font-semibold">Eksperimentoppsett</p><p className="mt-1 text-xs text-muted-foreground">Ekte modell eller merket kontroll</p></div>
                   <Swords className="size-4 text-cyan-200" />
                 </div>
               </div>
@@ -438,8 +603,32 @@ export function Playground({ initialArenas }: PlaygroundProps) {
                 </div>
 
                 <Separator />
-                <AgentConfig accent="cyan" agent={agentA} label="Agent A" onChange={(value) => { setAgentA(value); invalidateReplay(); }} providers={providers} />
-                <AgentConfig accent="violet" agent={agentB} label="Agent B" onChange={(value) => { setAgentB(value); invalidateReplay(); }} providers={providers} />
+                <AgentConfig
+                  accent="cyan"
+                  agent={agentA}
+                  label="Agent A"
+                  onChange={(value) => { setAgentA(value); invalidateReplay(); }}
+                  onSave={() => saveAgent("a")}
+                  onSelectAgentSerial={(serialNumber) => selectAgentBySerial("a", serialNumber)}
+                  onSelectSavedAgent={(agentId) => selectSavedAgent("a", agentId)}
+                  persistenceConfigured={agentPersistence === "postgres"}
+                  providers={providers}
+                  savedAgents={savedAgents}
+                  saving={savingAgent === "a"}
+                />
+                <AgentConfig
+                  accent="violet"
+                  agent={agentB}
+                  label="Agent B"
+                  onChange={(value) => { setAgentB(value); invalidateReplay(); }}
+                  onSave={() => saveAgent("b")}
+                  onSelectAgentSerial={(serialNumber) => selectAgentBySerial("b", serialNumber)}
+                  onSelectSavedAgent={(agentId) => selectSavedAgent("b", agentId)}
+                  persistenceConfigured={agentPersistence === "postgres"}
+                  providers={providers}
+                  savedAgents={savedAgents}
+                  saving={savingAgent === "b"}
+                />
 
                 <label className="grid gap-1.5 text-xs text-muted-foreground">
                   Startverdi
@@ -450,7 +639,7 @@ export function Playground({ initialArenas }: PlaygroundProps) {
                 </Button>
                 <div className="flex gap-2 rounded-lg border border-emerald-300/10 bg-emerald-300/[0.035] p-3 text-[10px] leading-4 text-muted-foreground">
                   <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-emerald-200" />
-                  Bare eksplisitt bekreftede gratis-modeller vises. Ingen API-nøkler sendes til nettleseren.
+                  Modellkatalogen følger serverens free-only-policy. Ingen API-nøkler sendes til nettleseren.
                 </div>
               </div>
             </aside>

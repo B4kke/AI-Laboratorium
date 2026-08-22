@@ -11,16 +11,30 @@ function itemSize(item: MemoryItem): number {
   return item.content.length;
 }
 
+function compactHash(value: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (const character of value) {
+    hash ^= BigInt(character.charCodeAt(0));
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, "0");
+}
+
 export function createMemorySnapshot(
   agentId: EntityId,
   budgetCharacters = 4_000,
+  options: { clock?: () => Date; generation?: number; parentId?: EntityId } = {},
 ): MemorySnapshot {
+  const generation = options.generation ?? 0;
   return Object.freeze(
     MemorySnapshotSchema.parse({
       agentId,
       budgetCharacters,
-      id: createDeterministicId("memory", `${agentId}-0`),
+      createdAt: (options.clock ?? (() => new Date()))().toISOString(),
+      generation,
+      id: createDeterministicId("memory", `${agentId}-${generation}-0`),
       items: [],
+      ...(options.parentId === undefined ? {} : { parentId: options.parentId }),
     }),
   );
 }
@@ -34,17 +48,22 @@ export function appendMemory(
   const retained: MemoryItem[] = [];
   let size = 0;
   for (const candidate of candidates.toReversed()) {
+    if (retained.length >= 200) continue;
     const candidateSize = itemSize(candidate);
     if (size + candidateSize <= snapshot.budgetCharacters) {
       retained.unshift(candidate);
       size += candidateSize;
     }
   }
-  const idSuffix = `${snapshot.agentId}-${retained.length}-${item.createdAt.replace(/\W/g, "")}`;
   const next = MemorySnapshotSchema.parse({
     ...snapshot,
-    id: createDeterministicId("memory", idSuffix.slice(0, 90)),
+    createdAt: item.createdAt,
+    id: createDeterministicId(
+      "memory",
+      `${snapshot.agentId}-${compactHash(JSON.stringify({ parentId: snapshot.id, retained }))}`,
+    ),
     items: retained,
+    parentId: snapshot.id,
   });
   Object.freeze(next.items);
   return Object.freeze(next);

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { MockProvider } from "./mock";
 import { createNvidiaNimProvider } from "./nvidia";
+import { OpenAICompatibleProvider } from "./openai-compatible";
 import { parseDecisionTrace } from "./utils";
 import { createOpenCodeZenProvider } from "./zen";
 
@@ -156,6 +157,33 @@ describe("providerpolicy", () => {
       provider.generateText?.({ modelId: "designer-free", prompt: "Lag", system: "JSON" }),
     ).rejects.toThrow(/annen modell/);
   });
+
+  it("prøver midlertidige providerfeil på nytt med eksponentiell jitter", async () => {
+    const delays: number[] = [];
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({}, 500))
+      .mockResolvedValueOnce(jsonResponse({}, 503))
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: "retry-free" }] }));
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: "https://provider.example/v1",
+      fetcher,
+      id: "opencode-zen",
+      modelClassifier: () => "confirmed-free",
+      policy: { freeOnly: true },
+      random: () => 0.5,
+      sleep: (milliseconds) => {
+        delays.push(milliseconds);
+        return Promise.resolve();
+      },
+    });
+
+    await expect(provider.listModels()).resolves.toEqual([
+      expect.objectContaining({ id: "retry-free" }),
+    ]);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(delays).toEqual([62, 125]);
+  });
 });
 
 describe("beslutningsproveniens", () => {
@@ -166,6 +194,7 @@ describe("beslutningsproveniens", () => {
         { description: "Del", id: "share", label: "Del" },
         { description: "Behold", id: "hoard", label: "Behold" },
       ],
+      conversationHistory: [],
       modelId: "scripted-adaptive",
       observation: "Motorens faktiske observasjon",
       prompt: "Velg",
@@ -197,6 +226,7 @@ describe("MockProvider", () => {
         { description: "Del", id: "share", label: "Del" },
         { description: "Behold", id: "hoard", label: "Behold" },
       ],
+      conversationHistory: [],
       modelId: "scripted-unpredictable",
       observation: "Runde 1, stillingen er 0–0.",
       prompt: "Velg handling.",

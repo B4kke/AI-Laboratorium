@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ApiUnauthorizedError, ApiUnavailableError } from "./http";
-import { assertRemoteProviderAccess, hasRemoteProviderAccess } from "./provider-access";
+import {
+  assertLaboratoryAccess,
+  assertRemoteProviderAccess,
+  hasRemoteProviderAccess,
+} from "./provider-access";
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -36,5 +40,15 @@ describe("provider-tilgang", () => {
     vi.stubEnv("AI_LAB_ACCESS_TOKEN", token);
     expect(hasRemoteProviderAccess(request(token))).toBe(true);
     expect(() => assertRemoteProviderAccess(request(token), "nvidia-nim")).not.toThrow();
+  });
+
+  it("krever et separat laboratorietoken i produksjon", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("AI_LAB_ACCESS_TOKEN", "");
+    expect(() => assertLaboratoryAccess(request())).toThrow(ApiUnavailableError);
+
+    const token = "riktig-tilgangsnøkkel-med-minst-32-tegn";
+    vi.stubEnv("AI_LAB_ACCESS_TOKEN", token);
+    expect(() => assertLaboratoryAccess(request(token))).not.toThrow();
   });
 });

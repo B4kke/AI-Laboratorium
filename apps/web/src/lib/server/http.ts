@@ -21,6 +21,13 @@ export class ApiInputError extends ApiHttpError {
   }
 }
 
+export class ApiNotFoundError extends ApiHttpError {
+  constructor(message = "Ressursen finnes ikke") {
+    super(message, 404);
+    this.name = "ApiNotFoundError";
+  }
+}
+
 export class ApiPayloadTooLargeError extends ApiHttpError {
   constructor(message = "Forespørselen er for stor") {
     super(message, 413);

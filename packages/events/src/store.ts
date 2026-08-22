@@ -9,10 +9,21 @@ import { parseEventPayload, type EventPayloadMap } from "./payloads";
 
 export type NewEvent<TType extends EventType> = Omit<
   EventEnvelope,
-  "actorId" | "id" | "occurredAt" | "payload" | "schemaVersion" | "type"
+  | "actorId"
+  | "agentSnapshotId"
+  | "genomeId"
+  | "id"
+  | "memoryId"
+  | "occurredAt"
+  | "payload"
+  | "schemaVersion"
+  | "type"
 > & {
   actorId?: EntityId;
+  agentSnapshotId?: EntityId;
+  genomeId?: EntityId;
   id: EntityId;
+  memoryId?: EntityId;
   occurredAt: string;
   payload: EventPayloadMap[TType];
   type: TType;
@@ -31,6 +42,9 @@ export function createEvent<TType extends EventType>(input: NewEvent<TType>): Ev
     sequence: input.sequence,
     type: input.type,
     ...(input.actorId === undefined ? {} : { actorId: input.actorId }),
+    ...(input.agentSnapshotId === undefined ? {} : { agentSnapshotId: input.agentSnapshotId }),
+    ...(input.genomeId === undefined ? {} : { genomeId: input.genomeId }),
+    ...(input.memoryId === undefined ? {} : { memoryId: input.memoryId }),
   };
 
   return EventEnvelopeSchema.parse(candidate);

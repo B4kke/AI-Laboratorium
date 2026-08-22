@@ -7,10 +7,19 @@ type DecisionMessageProps = {
   actorName: string;
   confidence: number;
   fromA: boolean;
+  message: string;
   rationale: string;
+  scripted: boolean;
 };
 
-export function DecisionMessage({ actorName, confidence, fromA, rationale }: DecisionMessageProps) {
+export function DecisionMessage({
+  actorName,
+  confidence,
+  fromA,
+  message,
+  rationale,
+  scripted,
+}: DecisionMessageProps) {
   return (
     <Message from={fromA ? "assistant" : "user"} className="max-w-[92%]">
       <MessageContent
@@ -22,9 +31,12 @@ export function DecisionMessage({ actorName, confidence, fromA, rationale }: Dec
         )}
       >
         <p className="mb-1 text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
-          {actorName} · {Math.round(confidence * 100)} % sikker
+          {actorName} · {scripted ? "SCRIPTED KONTROLL" : `${Math.round(confidence * 100)} % sikker`}
         </p>
-        <MessageResponse>{rationale}</MessageResponse>
+        <MessageResponse>{message}</MessageResponse>
+        <p className="mt-2 border-t border-white/8 pt-2 text-[10px] leading-4 text-muted-foreground">
+          Begrunnelse: {rationale}
+        </p>
       </MessageContent>
     </Message>
   );

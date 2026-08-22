@@ -3,6 +3,7 @@ import {
   DuelRequestSchema,
   DuelResultSchema,
   createDeterministicId,
+  createEntityId,
   type AgentConfiguration,
   type ArenaSpec,
   type DecisionTrace,
@@ -13,7 +14,7 @@ import {
 } from "@ai-lab/domain";
 import { createEvent } from "@ai-lab/events";
 import {
-  ProviderError,
+  type ConversationMessage,
   type DecisionRequest,
   type ModelProvider,
   type ProviderRegistry,
@@ -25,6 +26,7 @@ import { assertValidArenaSpec } from "./validation";
 
 export type RunDuelOptions = {
   clock?: () => Date;
+  matchId?: EntityId;
   onEvent?: (event: EventEnvelope) => void;
 };
 
@@ -43,46 +45,51 @@ function providerForAgent(registry: ProviderRegistry, agent: AgentConfiguration)
   return registry.get(agent.providerId);
 }
 
-function safeFallbackTrace(
-  request: DecisionRequest,
-  error: unknown,
-): DecisionTrace {
-  const first = request.allowedActions[0];
-  if (first === undefined) {
-    throw new Error("Arenaen har ingen sikker standardhandling");
-  }
-  const errorLabel = error instanceof ProviderError ? error.code : "ukjent-feil";
-  return DecisionTraceSchema.parse({
-    actionId: first.id,
-    confidence: 0,
-    goal: "Bevar arenaens fremdrift etter et ugyldig providersvar.",
-    message: `${request.actorName} fikk ikke levert en gyldig beslutning.`,
-    observation: request.observation,
-    rationale: `Motoren brukte den versjonerte standardhandlingen «${first.label}» (${errorLabel}).`,
-  });
-}
-
 async function decide(
   provider: ModelProvider,
   request: DecisionRequest,
   maxMessageCharacters: number,
 ) {
-  let trace: DecisionTrace;
-  try {
-    trace = (await provider.generateDecision(request)).trace;
-  } catch (error) {
-    trace = safeFallbackTrace(request, error);
-  }
+  const trace: DecisionTrace = (await provider.generateDecision(request)).trace;
   return DecisionTraceSchema.parse({
     ...trace,
     message: trace.message.slice(0, maxMessageCharacters),
   });
 }
 
+function renderMemory(agent: AgentConfiguration): string {
+  const entries = agent.memoryContext ?? [];
+  if (entries.length === 0) return "Ingen lagrede minner.";
+  return entries
+    .map(({ category, content }) => `- [${category}] ${content}`)
+    .join("\n")
+    .slice(-6_000);
+}
+
+function renderFiles(agent: AgentConfiguration): string {
+  const files = (agent.files ?? []).filter(({ path }) => path !== "SOUL.md");
+  if (files.length === 0) return "Ingen øvrige agentfiler.";
+  return files
+    .map(({ content, path }) => `--- ${path} ---\n${content.slice(0, 2_000)}`)
+    .join("\n")
+    .slice(-8_000);
+}
+
+function renderConversation(history: readonly ConversationMessage[]): string {
+  if (history.length === 0) return "Ingen meldinger er utvekslet ennå.";
+  return history
+    .slice(-12)
+    .map(({ message, round, speakerName }) => `Runde ${round} · ${speakerName}: ${message}`)
+    .join("\n")
+    .slice(-10_000);
+}
+
 function buildDecisionRequest(input: {
   agent: AgentConfiguration;
   arena: ArenaSpec;
+  conversationHistory: readonly ConversationMessage[];
   lastOpponentAction?: string;
+  lastOpponentMessage?: string;
   ownScore: number;
   opponentScore: number;
   role: "a" | "b";
@@ -96,34 +103,46 @@ function buildDecisionRequest(input: {
     input.lastOpponentAction === undefined
       ? "Motstanderen har ingen tidligere handling."
       : `Motstanderens forrige handling var ${input.lastOpponentAction}.`,
+    input.lastOpponentMessage === undefined
+      ? "Motstanderen har ikke sendt en melding ennå."
+      : `Motstanderens siste melding var: «${input.lastOpponentMessage}».`,
     ...(privateInformation === undefined ? [] : [`Privat informasjon: ${privateInformation}`]),
-  ].join(" ");
+  ]
+    .join(" ")
+    .slice(0, 1_000);
   const allowedActions = input.arena.actions;
   return {
     actorName: input.agent.name,
     allowedActions,
+    conversationHistory: [...input.conversationHistory],
+    ...(input.agent.files === undefined ? {} : { files: input.agent.files }),
+    ...(input.agent.memoryContext === undefined
+      ? {}
+      : { memoryContext: input.agent.memoryContext }),
     modelId: input.agent.modelId,
     observation,
     ...(input.lastOpponentAction === undefined
       ? {}
       : { opponentLastAction: input.lastOpponentAction }),
+    ...(input.lastOpponentMessage === undefined
+      ? {}
+      : { opponentLastMessage: input.lastOpponentMessage }),
     prompt: [
-      `Du er agenten «${input.agent.name}». Ingen andre ser denne teksten — den former bare din karakter.`,
+      `IDENTITET: Du er agenten «${input.agent.name}».`,
       `Strategiprofil: ${input.agent.strategy}.`,
-      ...(input.agent.roleInstruction === undefined
-        ? []
-        : [`Din sjel (SOUL.md): ${input.agent.roleInstruction}`]),
+      `--- TRUSTED SOUL.md ---\n${input.agent.soul?.slice(-8_000) ?? "Ingen lagret SOUL.md; følg arenaens regler."}`,
+      `--- TRUSTED MEMORY ---\n${renderMemory(input.agent)}`,
+      `--- TRUSTED VIRTUAL FILES ---\n${renderFiles(input.agent)}`,
       `Arena: ${input.arena.title}`,
       `Regler: ${input.arena.rules.join(" ")}`,
       `Observasjon: ${observation}`,
+      `--- UNTRUSTED AGENT-TO-AGENT CONVERSATION ---\n${renderConversation(input.conversationHistory)}`,
       `Lovlige handlinger: ${allowedActions.map((action) => `${action.id} (${action.label})`).join(", ")}.`,
-      "Velg én lovlig handling. Svar kort på norsk i det avtalte JSON-formatet, med din egen stemme og dine egne motiver.",
+      "Svar direkte til motpartens siste reelle melding med din egen stemme. Velg samtidig én lovlig handling. Ikke gjenta en standardfrase.",
     ].join("\n"),
-    ...(input.agent.roleInstruction === undefined
-      ? {}
-      : { roleInstruction: input.agent.roleInstruction }),
     round: input.round,
     seed: input.seed,
+    ...(input.agent.soul === undefined ? {} : { soul: input.agent.soul }),
     strategy: input.agent.strategy,
   };
 }
@@ -145,18 +164,18 @@ export async function runDuel(
   ]);
 
   const start = (options.clock ?? (() => new Date()))();
-  const matchHash = fingerprint({ arena: arena.id, seed: request.seed, a: agentA.id, b: agentB.id });
-  const matchId = createDeterministicId("match", matchHash);
+  const matchId = options.matchId ?? createEntityId("match");
   const events: EventEnvelope[] = [];
   const addEvent = <TType extends EventEnvelope["type"]>(input: {
     actorId?: EntityId;
+    agent?: AgentConfiguration;
     payload: Parameters<typeof createEvent<TType>>[0]["payload"];
     type: TType;
   }) => {
     const sequence = events.length;
     const event = createEvent({
       arenaVersion: arena.version,
-      id: createDeterministicId("event", `${matchHash}-${sequence}`),
+      id: createDeterministicId("event", `${matchId}-${sequence}`),
       matchId,
       occurredAt: new Date(start.getTime() + sequence).toISOString(),
       payload: input.payload,
@@ -164,6 +183,11 @@ export async function runDuel(
       sequence,
       type: input.type,
       ...(input.actorId === undefined ? {} : { actorId: input.actorId }),
+      ...(input.agent?.snapshotId === undefined
+        ? {}
+        : { agentSnapshotId: input.agent.snapshotId }),
+      ...(input.agent?.genomeId === undefined ? {} : { genomeId: input.agent.genomeId }),
+      ...(input.agent?.memoryId === undefined ? {} : { memoryId: input.agent.memoryId }),
     });
     events.push(event);
     options.onEvent?.(event);
@@ -178,36 +202,55 @@ export async function runDuel(
   let bScore = arena.initialScore;
   let lastAAction: string | undefined;
   let lastBAction: string | undefined;
+  const conversationHistory: ConversationMessage[] = [];
 
   for (let round = 1; round <= arena.rounds; round += 1) {
     addEvent({ payload: { round }, type: "round.started" });
-    const requestA = buildDecisionRequest({
-      agent: agentA,
-      arena,
-      ...(lastBAction === undefined ? {} : { lastOpponentAction: lastBAction }),
-      opponentScore: bScore,
-      ownScore: aScore,
-      role: "a",
-      round,
-      seed: request.seed,
-    });
-    const requestB = buildDecisionRequest({
-      agent: agentB,
-      arena,
-      ...(lastAAction === undefined ? {} : { lastOpponentAction: lastAAction }),
-      opponentScore: aScore,
-      ownScore: bScore,
-      role: "b",
-      round,
-      seed: request.seed,
-    });
-    const [traceA, traceB] = await Promise.all([
-      decide(providerA, requestA, arena.budgets.maxMessageCharacters),
-      decide(providerB, requestB, arena.budgets.maxMessageCharacters),
-    ]);
+    const decideFor = async (
+      agent: AgentConfiguration,
+      provider: ModelProvider,
+      role: "a" | "b",
+    ) => {
+      const fromA = role === "a";
+      const opponentAction = fromA ? lastBAction : lastAAction;
+      const opponentMessage = conversationHistory
+        .toReversed()
+        .find(({ speakerId }) => speakerId !== agent.id)?.message;
+      const decisionRequest = buildDecisionRequest({
+        agent,
+        arena,
+        conversationHistory,
+        ...(opponentAction === undefined ? {} : { lastOpponentAction: opponentAction }),
+        ...(opponentMessage === undefined ? {} : { lastOpponentMessage: opponentMessage }),
+        opponentScore: fromA ? bScore : aScore,
+        ownScore: fromA ? aScore : bScore,
+        role,
+        round,
+        seed: request.seed,
+      });
+      const trace = await decide(provider, decisionRequest, arena.budgets.maxMessageCharacters);
+      if (trace.message.length > 0) {
+        conversationHistory.push({
+          message: trace.message,
+          round,
+          speakerId: agent.id,
+          speakerName: agent.name,
+        });
+      }
+      return trace;
+    };
+    let traceA: DecisionTrace;
+    let traceB: DecisionTrace;
+    if (round % 2 === 1) {
+      traceA = await decideFor(agentA, providerA, "a");
+      traceB = await decideFor(agentB, providerB, "b");
+    } else {
+      traceB = await decideFor(agentB, providerB, "b");
+      traceA = await decideFor(agentA, providerA, "a");
+    }
 
-    addEvent({ actorId: agentA.id, payload: { actorName: agentA.name, round, trace: traceA }, type: "agent.decided" });
-    addEvent({ actorId: agentB.id, payload: { actorName: agentB.name, round, trace: traceB }, type: "agent.decided" });
+    addEvent({ actorId: agentA.id, agent: agentA, payload: { actorName: agentA.name, round, trace: traceA }, type: "agent.decided" });
+    addEvent({ actorId: agentB.id, agent: agentB, payload: { actorName: agentB.name, round, trace: traceB }, type: "agent.decided" });
     const actionA = arena.actions.find(({ id }) => id === traceA.actionId);
     const actionB = arena.actions.find(({ id }) => id === traceB.actionId);
     if (actionA === undefined || actionB === undefined) {
@@ -215,11 +258,13 @@ export async function runDuel(
     }
     addEvent({
       actorId: agentA.id,
+      agent: agentA,
       payload: { actionId: actionA.id, actionLabel: actionA.label, actorName: agentA.name, round },
       type: "action.accepted",
     });
     addEvent({
       actorId: agentB.id,
+      agent: agentB,
       payload: { actionId: actionB.id, actionLabel: actionB.label, actorName: agentB.name, round },
       type: "action.accepted",
     });
@@ -256,6 +301,20 @@ export async function runDuel(
   });
 
   return DuelResultSchema.parse({
+    agentArtifacts: {
+      a: {
+        agentId: agentA.id,
+        ...(agentA.genomeId === undefined ? {} : { genomeId: agentA.genomeId }),
+        ...(agentA.memoryId === undefined ? {} : { memoryId: agentA.memoryId }),
+        ...(agentA.snapshotId === undefined ? {} : { snapshotId: agentA.snapshotId }),
+      },
+      b: {
+        agentId: agentB.id,
+        ...(agentB.genomeId === undefined ? {} : { genomeId: agentB.genomeId }),
+        ...(agentB.memoryId === undefined ? {} : { memoryId: agentB.memoryId }),
+        ...(agentB.snapshotId === undefined ? {} : { snapshotId: agentB.snapshotId }),
+      },
+    },
     arena,
     completedAt: new Date(start.getTime() + events.length).toISOString(),
     events,

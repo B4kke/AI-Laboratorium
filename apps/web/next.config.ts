@@ -7,7 +7,9 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
   transpilePackages: [
+    "@ai-lab/agents",
     "@ai-lab/arena",
+    "@ai-lab/db",
     "@ai-lab/domain",
     "@ai-lab/events",
     "@ai-lab/evolution",

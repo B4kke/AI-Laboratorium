@@ -184,6 +184,17 @@ That allows:
 - Render worker deployment
 - later replacement by a Vercel durable workflow/queue implementation without rewriting arena/evolution packages
 
+### Implementert runtimeprofil
+
+Denne profilen er nå kodet som:
+
+- `apps/web`: validerer/kølegger jobber og leser status
+- `packages/db`: kanoniske agentsnapshots, events, dueller, lineage og leased Evolution-jobber i PostgreSQL
+- `workers/runner`: langlivet Node-prosess som claimer jobber, fornyer lease, kjører ekte providerkall og persisterer hvert barnesnapshot
+- `render.yaml`: web + PostgreSQL + separat Docker-worker
+
+Worker og web oppretter providerregister fra de samme miljøvariabelnavnene. Agentplasser lagrer bare provider-/modell-ID, aldri API-nøkkelen.
+
 ## Environment variables
 
 Likely initial secret/config names:

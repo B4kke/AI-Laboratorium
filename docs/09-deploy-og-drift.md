@@ -11,6 +11,7 @@ Dette er den operative sjekklisten for AI-Laboratorium. Den forutsetter at deplo
 5. For NVIDIA: legg bare bekreftede gratis-ID-er i `NVIDIA_CONFIRMED_FREE_MODELS`.
 6. Sett `REPORT_SIGNING_SECRET` til minst 32 tilfeldige tegn.
 7. Hvis en ekstern provider-nøkkel er satt, sett også en separat `AI_LAB_ACCESS_TOKEN` til minst 32 tilfeldige tegn.
+8. Sett `DATABASE_URL` for agentbibliotek/Evolution og start `pnpm --filter @ai-lab/runner worker` i en separat prosess.
 
 Lokale baselines krever ingen hemmeligheter og bør alltid brukes til smoke-test.
 
@@ -28,17 +29,17 @@ Miljøvariabler settes separat for Development, Preview og Production. Preview s
 
 ## Render
 
-`render.yaml` oppretter en Docker-basert web service og genererer `REPORT_SIGNING_SECRET` og `AI_LAB_ACCESS_TOKEN`. Legg eventuelle provider-nøkler inn som secrets i Render Dashboard. `PORT` leveres av plattformen og skal ikke hardkodes. Hvis tjenesten skaleres horisontalt, legg en distribuert rategrense foran API-rutene i Render Edge eller en tilsvarende proxy.
+`render.yaml` oppretter en Docker-basert web service, PostgreSQL og en separat Docker-worker. `DATABASE_URL` kobles fra databasen til begge tjenester. Blueprinten genererer `REPORT_SIGNING_SECRET` og `AI_LAB_ACCESS_TOKEN`; legg samme aktuelle provider-nøkler/allowlists inn som secrets for web og worker. `PORT` leveres av plattformen og skal ikke hardkodes. Hvis webtjenesten skaleres horisontalt, legg en distribuert rategrense foran API-rutene i Render Edge eller en tilsvarende proxy.
 
 ## Smoke-test
 
 Etter preview-deploy:
 
 1. Åpne forsiden og kontroller norsk innhold på mobil og desktop.
-2. Kjør Fangens dilemma med Astra og Nova i demomodus.
-3. Bekreft at replay går til siste hendelse og viser samme fingeravtrykk ved samme seed.
+2. Kjør Fangens dilemma først med merkede kontrollbaselines, deretter med to ekte modeller. Bekreft at replikkene i eventloggen er de faktiske providersvarene og at neste modellprompt inneholder forrige motpartsreplikk.
+3. Bekreft med scripted kontroller at replay går til siste hendelse og viser samme fingeravtrykk ved samme seed. Faktiske LLM-kjøringer får alltid unik kamp-ID og kan gi ulikt fingeravtrykk selv med samme seed.
 4. Last ned PDF og kontroller at filen starter med en lesbar rapportside.
-5. Kjør ti generasjoner og kontroller 10 generasjonsrader, 120 dueller og lineage.
+5. Lagre minst to agenter, bekreft «Agent N», SOUL.md, filer og minne etter reload, og kjør minst to generasjoner med ekte modeller. Kontroller nye barnesnapshots, SOUL-diff, minneskriv med match-provenance, lineage, retired-status og holdout-resultat.
 6. Kontroller runtime-loggene for `start`, `done`, status og varighet på API-kall.
 7. Bekreft at en for stor JSON-kropp gir `413`, at gjentatte kall gir `429`, og at eksterne modeller gir `401` uten korrekt Bearer-token.
 

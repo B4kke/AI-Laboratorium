@@ -244,7 +244,9 @@ export function DuelStage(props: DuelStageProps) {
                         actorName={payload.actorName}
                         confidence={payload.trace.confidence}
                         fromA={fromA}
+                        message={payload.trace.message}
                         rationale={payload.trace.rationale}
+                        scripted={(fromA ? agentA : agentB).providerId === "mock"}
                       />
                     </button>
                   );

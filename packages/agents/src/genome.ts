@@ -3,28 +3,77 @@ import {
   createDeterministicId,
   type GenomeSnapshot,
   type LineageEdge,
+  type VirtualAgentFile,
 } from "@ai-lab/domain";
 
 export type MutationOperator = LineageEdge["mutationOperator"];
 
-export type GenomeDraft = Omit<GenomeSnapshot, "id"> & { id?: GenomeSnapshot["id"] };
+export type GenomeDraft = Omit<GenomeSnapshot, "files" | "id"> & {
+  files?: readonly VirtualAgentFile[];
+  id?: GenomeSnapshot["id"];
+};
 
 function compactHash(value: string): string {
-  let hash = 2166136261;
+  let hash = 0xcbf29ce484222325n;
   for (const character of value) {
-    hash ^= character.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
+    hash ^= BigInt(character.charCodeAt(0));
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
   }
-  return (hash >>> 0).toString(16).padStart(8, "0");
+  return hash.toString(16).padStart(16, "0");
 }
 
 function freezeGenome(genome: GenomeSnapshot): GenomeSnapshot {
+  for (const file of genome.files) Object.freeze(file);
+  Object.freeze(genome.files);
   Object.freeze(genome.objectives);
   Object.freeze(genome.parentIds);
   return Object.freeze(genome);
 }
 
+function markdownList(values: readonly string[]): string {
+  return `${values.map((value) => `- ${value}`).join("\n")}\n`;
+}
+
+function canonicalFiles(draft: GenomeDraft): VirtualAgentFile[] {
+  const supplied = new Map(draft.files?.map((file) => [file.path, file]) ?? []);
+  const derived: VirtualAgentFile[] = [
+    { content: draft.soul, mediaType: "text/markdown", path: "SOUL.md" },
+    {
+      content: markdownList(draft.objectives),
+      mediaType: "text/markdown",
+      path: "objectives.md",
+    },
+    {
+      content:
+        supplied.get("policy.md")?.content ??
+        "Følg arenaens regler, velg bare validerte handlinger og oppgi en kort beslutningsbegrunnelse.\n",
+      mediaType: "text/markdown",
+      path: "policy.md",
+    },
+    {
+      content: `${JSON.stringify({ riskProfile: draft.riskProfile }, null, 2)}\n`,
+      mediaType: "application/json",
+      path: "risk-profile.json",
+    },
+    {
+      content: draft.communicationPolicy,
+      mediaType: "text/markdown",
+      path: "communication-policy.md",
+    },
+    {
+      content:
+        supplied.get("memory-policy.md")?.content ??
+        "Behold korte, etterprøvbare erfaringer med kilde og forkast duplikater.\n",
+      mediaType: "text/markdown",
+      path: "memory-policy.md",
+    },
+    ...(supplied.get("tools.md") === undefined ? [] : [supplied.get("tools.md")!]),
+  ];
+  return derived;
+}
+
 export function createGenome(draft: GenomeDraft): GenomeSnapshot {
+  const files = canonicalFiles(draft);
   const identity = [
     draft.soul,
     draft.communicationPolicy,
@@ -32,10 +81,13 @@ export function createGenome(draft: GenomeDraft): GenomeSnapshot {
     draft.riskProfile,
     draft.generation,
     draft.parentIds.join("|"),
+    JSON.stringify(draft.mutation ?? null),
+    files.map(({ content, path }) => `${path}:${content}`).join("|"),
   ].join("::");
   return freezeGenome(
     GenomeSnapshotSchema.parse({
       ...draft,
+      files,
       id: draft.id ?? createDeterministicId("genome", compactHash(identity)),
     }),
   );
@@ -43,7 +95,9 @@ export function createGenome(draft: GenomeDraft): GenomeSnapshot {
 
 const operatorText: Record<MutationOperator, string> = {
   compression: "Prioriter færre prinsipper og gjør hvert valg tydelig etterprøvbart.",
+  counter_strategy: "Tilpass strategien mot observerte motstandermønstre uten å overtilpasse.",
   crossover: "Kombiner langsiktig samarbeid med kontrollert opportunisme.",
+  randomized: "Endre ett avgrenset strategiprinsipp og behold resten uendret.",
   reflection: "Kontroller siste feil før du velger, og beskriv hva som endret vurderingen.",
   specialization: "Spiss strategien mot arenaens eksplisitte poengregler og motpartens mønster.",
 };

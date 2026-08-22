@@ -1,8 +1,6 @@
 import {
-  MockProvider,
+  createEnvironmentProviders,
   ProviderRegistry,
-  createNvidiaNimProvider,
-  createOpenCodeZenProvider,
   type ModelDescriptor,
   type ProviderHealth,
   type ProviderId,
@@ -17,36 +15,10 @@ export type ProviderCatalogEntry = {
   name: string;
 };
 
-function optional(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
-}
-
-const confirmedNvidiaModels = new Set(
-  (process.env.NVIDIA_CONFIRMED_FREE_MODELS ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean),
-);
-const nvidiaApiKey = optional(process.env.NVIDIA_API_KEY);
-const zenApiKey = optional(process.env.OPENCODE_ZEN_API_KEY);
-
-const providers = [
-  new MockProvider(),
-  createNvidiaNimProvider({
-    confirmedFreeModelIds: confirmedNvidiaModels,
-    freeOnly: process.env.PROVIDER_FREE_ONLY !== "false",
-    requestTimeoutMs: Number(process.env.PROVIDER_REQUEST_TIMEOUT_MS ?? 45_000),
-    ...(nvidiaApiKey === undefined ? {} : { apiKey: nvidiaApiKey }),
-  }),
-  createOpenCodeZenProvider({
-    freeOnly: process.env.PROVIDER_FREE_ONLY !== "false",
-    requestTimeoutMs: Number(process.env.PROVIDER_REQUEST_TIMEOUT_MS ?? 45_000),
-    ...(zenApiKey === undefined ? {} : { apiKey: zenApiKey }),
-  }),
-] as const;
+const providers = createEnvironmentProviders(process.env);
 
 const registry = new ProviderRegistry(providers);
+const freeOnly = process.env.PROVIDER_FREE_ONLY !== "false";
 
 export function getProviderRegistry(): ProviderRegistry {
   return registry;
@@ -77,7 +49,8 @@ export async function getProviderCatalog(request: Request): Promise<readonly Pro
       if (health.status === "available" || provider.id === "mock") {
         try {
           models = (await provider.listModels()).filter(
-            ({ freeClassification }) => freeClassification === "confirmed-free",
+            ({ freeClassification }) =>
+              !freeOnly || freeClassification === "confirmed-free",
           );
         } catch {
           models = [];

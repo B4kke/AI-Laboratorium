@@ -71,7 +71,9 @@ export type OpenAICompatibleProviderOptions = {
   modelClassifier?: (id: string) => FreeClassification;
   modelFilter?: (modelId: string) => boolean;
   policy: ProviderPolicy;
+  random?: () => number;
   requestTimeoutMs?: number;
+  sleep?: (milliseconds: number) => Promise<void>;
 };
 
 const modelResponseLimitBytes = 512_000;
@@ -180,7 +182,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
   readonly #modelClassifier: ((id: string) => FreeClassification) | undefined;
   readonly #modelFilter: ((modelId: string) => boolean) | undefined;
   readonly #policy: ProviderPolicy;
+  readonly #random: () => number;
   readonly #requestTimeoutMs: number;
+  readonly #sleep: (milliseconds: number) => Promise<void>;
   #consecutiveFailures = 0;
   #circuitOpenUntil = 0;
   #modelCache: { expiresAt: number; models: readonly ModelDescriptor[] } | undefined;
@@ -199,7 +203,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
     this.#modelClassifier = options.modelClassifier;
     this.#modelFilter = options.modelFilter;
     this.#policy = options.policy;
+    this.#random = options.random ?? Math.random;
     this.#requestTimeoutMs = options.requestTimeoutMs ?? 45_000;
+    this.#sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   }
 
   async listModels(): Promise<readonly ModelDescriptor[]> {
@@ -278,7 +284,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
           messages: [
             {
               content:
-                "Du er en arena-agent som spiller i egen karakter. Svar alltid som agenten selv, i førsteperson: la meldingen og begrunnelsen gjenspeile agentens navn, sjel, strategi og situasjonen i observasjonen. Vær konkret og personlig, aldri generisk. Returner likevel BARE ett JSON-objekt med feltene actionId, message, observation, goal, rationale og confidence — ingen tankerekke, forklaring eller tekst utenfor objektet.",
+                "Du er en arena-agent som spiller i egen karakter. Svar alltid som agenten selv, i førsteperson. Reager konkret på motpartens faktiske melding og la ordvalg, mål og handling følge din SOUL.md, ditt minne og situasjonen. Ikke bruk generiske standardreplikker. Returner BARE ett JSON-objekt med feltene actionId, message, observation, goal, rationale, confidence og valgfritt memoryWrite {category, content}. Returner aldri privat tankerekke eller tekst utenfor objektet.",
               role: "system",
             },
             { content: request.prompt, role: "user" },
@@ -496,8 +502,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
       }
 
       if (attempt < 2) {
-        const backoffMs = Math.min(50 * 2 ** attempt, Math.max(0, deadline - Date.now()));
-        if (backoffMs > 0) await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        const baseBackoffMs = 50 * 2 ** attempt;
+        const jitterMs = Math.floor(baseBackoffMs * 0.5 * this.#random());
+        const backoffMs = Math.min(
+          baseBackoffMs + jitterMs,
+          Math.max(0, deadline - Date.now()),
+        );
+        if (backoffMs > 0) await this.#sleep(backoffMs);
       }
     }
 

@@ -9,7 +9,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@ai-lab/agents": "workspace:*",
     "@ai-lab/arena": "workspace:*",
+    "@ai-lab/db": "workspace:*",
     "@ai-lab/domain": "workspace:*",
     "@ai-lab/evolution": "workspace:*",
     "@ai-lab/events": "workspace:*",

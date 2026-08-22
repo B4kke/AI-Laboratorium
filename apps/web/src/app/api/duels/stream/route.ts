@@ -8,9 +8,17 @@ import {
   readJsonBody,
   withConcurrencyLimit,
 } from "@/lib/server/http";
-import { assertRemoteProviderAccess } from "@/lib/server/provider-access";
+import {
+  assertLaboratoryAccess,
+  assertRemoteProviderAccess,
+} from "@/lib/server/provider-access";
 import { getProviderRegistry } from "@/lib/server/providers";
 import { createReportToken } from "@/lib/server/report-token";
+import {
+  getOptionalLaboratoryRepository,
+  isDatabaseConfigured,
+} from "@/lib/server/database";
+import { resolveDuelAgentSnapshots } from "@/lib/server/saved-agents";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -22,7 +30,9 @@ export async function POST(request: Request) {
       limit: 20,
       windowMs: 60_000,
     });
-    const input = DuelRequestSchema.parse(await readJsonBody(request));
+    if (isDatabaseConfigured()) assertLaboratoryAccess(request);
+    const parsedInput = DuelRequestSchema.parse(await readJsonBody(request));
+    const input = await resolveDuelAgentSnapshots(parsedInput);
     const arena = input.arenaSpec ?? getBuiltInArena(input.arenaId ?? "");
     if (arena === undefined) throw new ApiInputError("Ukjent innebygd arena");
 
@@ -60,6 +70,7 @@ export async function POST(request: Request) {
                 onEvent: (event) => send({ event, kind: "event" }),
               }),
           );
+          await (await getOptionalLaboratoryRepository())?.saveDuel(result);
           send({ kind: "result", reportToken: createReportToken(result), result });
         } catch (error) {
           send({

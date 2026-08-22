@@ -44,6 +44,11 @@ export function isRemoteProviderAccessConfigured(): boolean {
   return token !== undefined && (process.env.NODE_ENV !== "production" || token.length >= 32);
 }
 
+export function isLaboratoryAccessConfigured(): boolean {
+  const token = expectedAccessToken();
+  return process.env.NODE_ENV !== "production" || (token !== undefined && token.length >= 32);
+}
+
 export function hasRemoteProviderAccess(request: Request): boolean {
   const expected = expectedAccessToken();
   const actual = suppliedAccessToken(request);
@@ -64,6 +69,21 @@ export function assertRemoteProviderAccess(request: Request, providerId: RemoteP
     throw new ApiUnavailableError(
       "Eksterne modellkilder er låst til AI_LAB_ACCESS_TOKEN er konfigurert sikkert",
     );
+  }
+  const actual = suppliedAccessToken(request);
+  if (actual === undefined || !matchesToken(actual, expected)) throw new ApiUnauthorizedError();
+}
+
+export function assertLaboratoryAccess(request: Request): void {
+  const expected = expectedAccessToken();
+  if (expected === undefined) {
+    if (process.env.NODE_ENV === "production") {
+      throw new ApiUnavailableError("AI_LAB_ACCESS_TOKEN må konfigureres i produksjon");
+    }
+    return;
+  }
+  if (process.env.NODE_ENV === "production" && expected.length < 32) {
+    throw new ApiUnavailableError("AI_LAB_ACCESS_TOKEN må ha minst 32 tegn i produksjon");
   }
   const actual = suppliedAccessToken(request);
   if (actual === undefined || !matchesToken(actual, expected)) throw new ApiUnauthorizedError();

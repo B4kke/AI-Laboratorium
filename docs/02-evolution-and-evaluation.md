@@ -81,6 +81,12 @@ population
   -> next generation
 ```
 
+### Implementert v1-kontrakt
+
+Den første reelle kjørebanen bruker en databasekø og separat worker. Brukeren velger antall generasjoner (1–100), populasjon (2–100), trials, holdout-trials, parallellitet, standardmodell, separat mutasjonsmodell og eventuelle per-plass-overstyringer. En overstyring kan peke på et lagret agentsnapshot («Agent N») eller en annen modell; providerens API-nøkkel konfigureres én gang per runtime og kopieres aldri inn i agentkonfigurasjonen.
+
+Etter hver evalueringsfase sendes bare observerbare handlinger, brukerrettede traces, meldinger, scores, arena og seeds til mutasjonsmodellen. Et strengt skjema avgrenser endringer til virtuelle agentfiler. Godkjente barn får nye immutable genome-, memory-, agent- og lineage-ID-er. Sealed holdout-seeds brukes først etter siste mutasjon og skrives aldri inn i mutasjonsfeedback.
+
 ## Selection strategies
 
 Support several strategies rather than one hardcoded algorithm.

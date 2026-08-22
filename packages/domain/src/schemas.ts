@@ -119,13 +119,66 @@ export const ProviderSnapshotSchema = z
 
 export type ProviderSnapshot = z.infer<typeof ProviderSnapshotSchema>;
 
+export const AgentFilePathSchema = z.enum([
+  "SOUL.md",
+  "objectives.md",
+  "policy.md",
+  "risk-profile.json",
+  "communication-policy.md",
+  "memory-policy.md",
+  "tools.md",
+]);
+
+export type AgentFilePath = z.infer<typeof AgentFilePathSchema>;
+
+export const VirtualAgentFileSchema = z
+  .object({
+    content: z.string().max(16_000),
+    mediaType: z.enum(["application/json", "text/markdown"]),
+    path: AgentFilePathSchema,
+  })
+  .strict();
+
+export type VirtualAgentFile = z.infer<typeof VirtualAgentFileSchema>;
+
+export const MemoryWriteCandidateSchema = z
+  .object({
+    category: z.enum([
+      "mistake",
+      "opponent_model",
+      "principle",
+      "successful_pattern",
+      "world_model",
+    ]),
+    content: z.string().trim().min(1).max(1_000),
+  })
+  .strict();
+
+export type MemoryWriteCandidate = z.infer<typeof MemoryWriteCandidateSchema>;
+
+export const AgentArtifactReferenceSchema = z
+  .object({
+    agentId: EntityIdSchema,
+    genomeId: EntityIdSchema.optional(),
+    memoryId: EntityIdSchema.optional(),
+    snapshotId: EntityIdSchema.optional(),
+  })
+  .strict();
+
+export type AgentArtifactReference = z.infer<typeof AgentArtifactReferenceSchema>;
+
 export const AgentConfigurationSchema = z
   .object({
+    files: z.array(VirtualAgentFileSchema).max(7).optional(),
+    genomeId: EntityIdSchema.optional(),
     id: EntityIdSchema,
+    memoryContext: z.array(MemoryWriteCandidateSchema).max(200).optional(),
+    memoryId: EntityIdSchema.optional(),
     modelId: z.string().trim().min(1).max(200),
     name: z.string().trim().min(1).max(60),
     providerId: z.enum(["mock", "nvidia-nim", "opencode-zen"]),
-    roleInstruction: z.string().trim().max(500).optional(),
+    snapshotId: EntityIdSchema.optional(),
+    soul: z.string().trim().min(1).max(16_000).optional(),
     strategy: AgentStrategySchema,
   })
   .strict();
@@ -138,6 +191,7 @@ export const DecisionTraceSchema = z
     confidence: z.number().min(0).max(1),
     goal: z.string().trim().min(1).max(300),
     message: z.string().trim().max(1000),
+    memoryWrite: MemoryWriteCandidateSchema.optional(),
     observation: z.string().trim().min(1).max(1000),
     rationale: z.string().trim().min(1).max(600),
   })
@@ -181,9 +235,12 @@ export type EventType = z.infer<typeof EventTypeSchema>;
 export const EventEnvelopeSchema = z
   .object({
     actorId: EntityIdSchema.optional(),
+    agentSnapshotId: EntityIdSchema.optional(),
     arenaVersion: z.string().trim().min(1).max(30),
+    genomeId: EntityIdSchema.optional(),
     id: EntityIdSchema,
     matchId: EntityIdSchema,
+    memoryId: EntityIdSchema.optional(),
     occurredAt: IsoDateSchema,
     payload: z.record(z.string(), z.unknown()),
     schemaVersion: SchemaVersionSchema,
@@ -197,6 +254,13 @@ export type EventEnvelope = z.infer<typeof EventEnvelopeSchema>;
 
 export const DuelResultSchema = z
   .object({
+    agentArtifacts: z
+      .object({
+        a: AgentArtifactReferenceSchema,
+        b: AgentArtifactReferenceSchema,
+      })
+      .strict()
+      .optional(),
     arena: ArenaSpecSchema,
     completedAt: IsoDateSchema,
     // Maksimal legitim duell: created + 40 * 6 rundehendelser + finished.
@@ -220,14 +284,55 @@ export type DuelResult = z.infer<typeof DuelResultSchema>;
 export const GenomeSnapshotSchema = z
   .object({
     communicationPolicy: z.string().max(4000),
+    files: z.array(VirtualAgentFileSchema).min(1).max(7),
     generation: z.number().int().nonnegative(),
     id: EntityIdSchema,
+    mutation: z
+      .object({
+        changedFiles: z.array(AgentFilePathSchema).max(7),
+        modelId: z.string().trim().min(1).max(200),
+        operator: z.enum([
+          "compression",
+          "counter_strategy",
+          "crossover",
+          "randomized",
+          "reflection",
+          "specialization",
+        ]),
+        promptVersion: z.string().trim().min(1).max(50),
+        providerId: z.enum(["nvidia-nim", "opencode-zen"]),
+        summary: z.string().trim().min(1).max(1_000),
+        validationStatus: z.literal("accepted"),
+      })
+      .strict()
+      .optional(),
     objectives: z.array(z.string().min(1).max(500)).min(1).max(12),
     parentIds: z.array(EntityIdSchema).max(2),
     riskProfile: z.number().min(0).max(1),
     soul: z.string().min(1).max(16000),
   })
-  .strict();
+  .strict()
+  .superRefine((genome, context) => {
+    const paths = new Set<string>();
+    for (const [index, file] of genome.files.entries()) {
+      if (paths.has(file.path)) {
+        context.addIssue({
+          code: "custom",
+          message: `Filen ${file.path} finnes flere ganger`,
+          path: ["files", index, "path"],
+        });
+      }
+      paths.add(file.path);
+    }
+    const soulFile = genome.files.find(({ path }) => path === "SOUL.md");
+    if (soulFile === undefined || soulFile.content !== genome.soul) {
+      context.addIssue({
+        code: "custom",
+        message: "SOUL.md må finnes og være identisk med genomets soul-felt",
+        path: ["files"],
+      });
+    }
+  });
 
 export type GenomeSnapshot = z.infer<typeof GenomeSnapshotSchema>;
 
@@ -252,18 +357,62 @@ export const MemorySnapshotSchema = z
   .object({
     agentId: EntityIdSchema,
     budgetCharacters: z.number().int().min(100).max(100000),
+    createdAt: IsoDateSchema,
+    generation: z.number().int().nonnegative(),
     id: EntityIdSchema,
     items: z.array(MemoryItemSchema).max(200),
+    parentId: EntityIdSchema.optional(),
   })
   .strict();
 
 export type MemorySnapshot = z.infer<typeof MemorySnapshotSchema>;
 
+export const AgentSnapshotSchema = z
+  .object({
+    agentId: EntityIdSchema,
+    createdAt: IsoDateSchema,
+    genome: GenomeSnapshotSchema,
+    id: EntityIdSchema,
+    memory: MemorySnapshotSchema,
+    modelId: z.string().trim().min(1).max(200),
+    name: z.string().trim().min(1).max(60),
+    parentSnapshotIds: z.array(EntityIdSchema).max(2),
+    providerId: z.enum(["mock", "nvidia-nim", "opencode-zen"]),
+    status: z.enum(["active", "baseline", "champion", "retired"]),
+    strategy: AgentStrategySchema,
+  })
+  .strict()
+  .superRefine((snapshot, context) => {
+    if (snapshot.memory.agentId !== snapshot.agentId) {
+      context.addIssue({
+        code: "custom",
+        message: "Minnet tilhører ikke agenten i snapshotet",
+        path: ["memory", "agentId"],
+      });
+    }
+    if (snapshot.memory.generation !== snapshot.genome.generation) {
+      context.addIssue({
+        code: "custom",
+        message: "Genom og minne må tilhøre samme generasjon",
+        path: ["memory", "generation"],
+      });
+    }
+  });
+
+export type AgentSnapshot = z.infer<typeof AgentSnapshotSchema>;
+
 export const LineageEdgeSchema = z
   .object({
     childGenomeId: EntityIdSchema,
     id: EntityIdSchema,
-    mutationOperator: z.enum(["compression", "crossover", "reflection", "specialization"]),
+    mutationOperator: z.enum([
+      "compression",
+      "counter_strategy",
+      "crossover",
+      "randomized",
+      "reflection",
+      "specialization",
+    ]),
     parentGenomeIds: z.array(EntityIdSchema).min(1).max(2),
   })
   .strict();

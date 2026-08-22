@@ -385,6 +385,19 @@ When GPT Work starts frontend implementation, use these skills deliberately:
 
 Work should take these in order unless fresh evidence invalidates an assumption.
 
+### Implementasjonsbevis per 2026-08-22
+
+Følgende er implementert i kode, men skal fortsatt skilles fra produksjonsverifisering:
+
+- **Agent-snapshot:** PostgreSQL lagrer en stabil «Agent N»-identitet og immutable snapshots som binder provider/modell, `SOUL.md`, øvrige virtuelle filer, bounded memory og foreldre. UI/API kan hente et eksakt agentnummer uavhengig av paginert liste.
+- **Quick Duel:** lagrede snapshots løses på serveren; den faktiske siste motpartsreplikken og en immutable samtalehistorikk går inn i neste providerkall, og UI viser providerens faktiske `message` uten fabrikkert fallback.
+- **Evolution v1:** konfigurasjon støtter 1–100 generasjoner, 2–100 agenter, en sentral standardmodell og per-plass-overstyring av lagret agent/modell. Scripted providers avvises som evolusjonskandidater.
+- **Mutasjon:** en eksplisitt remote mutasjonsmodell mottar bare observerbare kampdata og lager et validert forslag for `SOUL.md`, filer og minneskriv. Barn, diff, provider/model-snapshot, memory-provenance og lineage persisteres; tapere merkes retired uten sletting.
+- **Evaluering:** gjentatte seedede trials i sidebyttede par, fitnessvektor, evaluatorversjon, generasjonsvis hall of fame, Wilson-intervall og forseglede holdout-seeds ligger i resultatproveniensen. Champion-promotering krever positiv margin og nedre 95 %-grense over 50 % mot en historisk incumbent når en finnes.
+- **Runtime:** web er kontrollplan; PostgreSQL-kø og en separat Node-worker kjører lange forsøk og fornyer lease under dueller.
+
+Automatiserte tester bruker en fake remote provider og beviser at modellgenerert SOUL/minne påvirker nye snapshots uten å bruke ekstern kvote. En produksjonssmoke med ekte provider-nøkkel, faktisk PostgreSQL og deployet worker må gjennomføres før funksjonen kalles produksjonsklar. Bredere hall-of-fame-sampling, miljøperturbasjon og distribuert provider-rateplanlegging står fortsatt igjen fra den fulle P1/P2-planen.
+
 ### TASK-001 — Bootstrap project
 
 Create monorepo skeleton and CI. No elaborate UI yet.

@@ -1,7 +1,9 @@
 import type {
   AgentStrategy,
   DecisionTrace,
+  MemoryWriteCandidate,
   ProviderSnapshot,
+  VirtualAgentFile,
 } from "@ai-lab/domain";
 
 export type FreeClassification = ProviderSnapshot["freeClassification"];
@@ -22,16 +24,27 @@ export type ProviderHealth = {
   status: "available" | "degraded" | "not-configured" | "unavailable";
 };
 
+export type ConversationMessage = {
+  message: string;
+  round: number;
+  speakerId: string;
+  speakerName: string;
+};
+
 export type DecisionRequest = {
   actorName: string;
   allowedActions: ReadonlyArray<{ description: string; id: string; label: string }>;
+  conversationHistory: readonly ConversationMessage[];
+  files?: readonly VirtualAgentFile[];
+  memoryContext?: readonly MemoryWriteCandidate[];
   modelId: string;
   observation: string;
   opponentLastAction?: string;
+  opponentLastMessage?: string;
   prompt: string;
-  roleInstruction?: string;
   round: number;
   seed: string;
+  soul?: string;
   strategy: AgentStrategy;
 };
 

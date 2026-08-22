@@ -10,6 +10,8 @@
     "@ai-lab/arena": "workspace:*",
     "@ai-lab/domain": "workspace:*",
     "@ai-lab/evaluation": "workspace:*",
-    "@ai-lab/providers": "workspace:*"
+    "@ai-lab/events": "workspace:*",
+    "@ai-lab/providers": "workspace:*",
+    "zod": "^4.3.6"
   }
 }

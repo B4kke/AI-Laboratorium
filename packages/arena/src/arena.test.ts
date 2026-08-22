@@ -81,6 +81,7 @@ describe("runDuel", () => {
     const clock = () => new Date("2026-08-21T20:00:00.000Z");
     const first = await runDuel(request, registry, { clock });
     const second = await runDuel(request, registry, { clock });
+    expect(first.matchId).not.toBe(second.matchId);
     expect(first.replayFingerprint).toBe(second.replayFingerprint);
     expect(first.scores).toEqual(second.scores);
     expect(projectDuel(first.events)).toEqual(projectDuel(second.events));
@@ -98,7 +99,7 @@ describe("runDuel", () => {
   });
 
   it("leverer agentens sjel og navn inn i beslutningsforespørselen", async () => {
-    const captured: Array<{ prompt: string; roleInstruction?: string | undefined }> = [];
+    const captured: Array<{ prompt: string; soul?: string | undefined }> = [];
     const capturingProvider = {
       captureSnapshot: async (modelId: string) => ({
         capturedAt: new Date().toISOString(),
@@ -114,9 +115,9 @@ describe("runDuel", () => {
         allowedActions: ReadonlyArray<{ id: string }>;
         observation: string;
         prompt: string;
-        roleInstruction?: string;
+        soul?: string;
       }) => {
-        captured.push({ prompt: decisionRequest.prompt, roleInstruction: decisionRequest.roleInstruction });
+        captured.push({ prompt: decisionRequest.prompt, soul: decisionRequest.soul });
         return {
           finishReason: "stop",
           latencyMs: 1,
@@ -138,23 +139,78 @@ describe("runDuel", () => {
     await runDuel(
       {
         ...request,
-        agentA: { ...request.agentA, name: "Miranda", providerId: "opencode-zen" as const, roleInstruction: "Du er en mistenksom forretningskvinne." },
+        agentA: { ...request.agentA, name: "Miranda", providerId: "opencode-zen" as const, soul: "Du er en mistenksom forretningskvinne." },
         agentB: { ...request.agentB, providerId: "opencode-zen" as const },
       },
       new ProviderRegistry([capturingProvider]),
     );
     expect(captured.length).toBeGreaterThan(0);
-    const mirandaCalls = captured.filter((call) => call.prompt.includes("Miranda"));
+    const mirandaCalls = captured.filter((call) =>
+      call.prompt.includes("IDENTITET: Du er agenten «Miranda»"),
+    );
     expect(mirandaCalls.length).toBeGreaterThan(0);
     expect(
-      mirandaCalls.every((call) => call.roleInstruction === "Du er en mistenksom forretningskvinne."),
+      mirandaCalls.every((call) => call.soul === "Du er en mistenksom forretningskvinne."),
     ).toBe(true);
     const firstMiranda = mirandaCalls[0];
     expect(firstMiranda).toBeDefined();
     expect(firstMiranda?.prompt).toContain("Du er agenten «Miranda»");
     expect(firstMiranda?.prompt).toContain(
-      "Din sjel (SOUL.md): Du er en mistenksom forretningskvinne.",
+      "TRUSTED SOUL.md ---\nDu er en mistenksom forretningskvinne.",
     );
+  });
+
+  it("lar modellagentene svare på hverandres faktiske meldinger", async () => {
+    const seenConversations: string[][] = [];
+    const conversationalProvider = {
+      captureSnapshot: async (modelId: string) => ({
+        capturedAt: new Date().toISOString(),
+        endpointFamily: "chat-completions" as const,
+        freeClassification: "confirmed-free" as const,
+        id: `provider_conversation-${modelId}`,
+        modelId,
+        providerId: "opencode-zen" as const,
+        supportsStructuredOutput: false,
+        supportsTools: false,
+      }),
+      generateDecision: async (decisionRequest: {
+        actorName: string;
+        allowedActions: ReadonlyArray<{ id: string }>;
+        conversationHistory: ReadonlyArray<{ message: string }>;
+        observation: string;
+      }) => {
+        seenConversations.push(decisionRequest.conversationHistory.map(({ message }) => message));
+        const previous = decisionRequest.conversationHistory.at(-1)?.message ?? "ingen melding";
+        return {
+          finishReason: "stop",
+          latencyMs: 1,
+          modelId: "conversation-free",
+          providerId: "opencode-zen" as const,
+          trace: {
+            actionId: decisionRequest.allowedActions[0]?.id ?? "",
+            confidence: 0.8,
+            goal: "Besvar motparten konkret.",
+            message: `${decisionRequest.actorName} svarer på: ${previous}`,
+            observation: decisionRequest.observation,
+            rationale: `Jeg reagerte på den faktiske meldingen «${previous}».`,
+          },
+          usage: {},
+        };
+      },
+      id: "opencode-zen",
+    } as unknown as ModelProvider;
+    const result = await runDuel(
+      {
+        ...request,
+        agentA: { ...request.agentA, modelId: "conversation-free", providerId: "opencode-zen" as const },
+        agentB: { ...request.agentB, modelId: "conversation-free", providerId: "opencode-zen" as const },
+      },
+      new ProviderRegistry([conversationalProvider]),
+    );
+
+    expect(seenConversations.some((messages) => messages.length > 0)).toBe(true);
+    const decisions = result.events.filter((event) => event.type === "agent.decided");
+    expect(JSON.stringify(decisions)).toContain("svarer på:");
   });
 
   it("lekker ikke motstanderens private informasjon i observasjonen", async () => {

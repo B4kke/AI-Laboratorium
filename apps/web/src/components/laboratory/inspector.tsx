@@ -81,8 +81,15 @@ function EventDetails({ event }: { event: EventEnvelope | null }) {
               <Progress value={payload.trace.confidence * 100} className="h-1" />
             </div>
             <DetailRow label="Mål" value={payload.trace.goal} />
+            <DetailRow label="Melding til motparten" value={payload.trace.message || "Ingen melding"} />
             <DetailRow label="Kort begrunnelse" value={payload.trace.rationale} />
             <DetailRow label="Observasjon" value={payload.trace.observation} />
+            {payload.trace.memoryWrite !== undefined && (
+              <DetailRow
+                label={`Minnekandidat · ${payload.trace.memoryWrite.category}`}
+                value={payload.trace.memoryWrite.content}
+              />
+            )}
           </dl>
         );
       })()}

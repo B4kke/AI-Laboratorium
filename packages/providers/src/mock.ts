@@ -91,8 +91,8 @@ export class MockProvider implements ModelProvider {
           : "Bygg en robust strategi over flere runder.",
       message:
         action.id === first.id
-          ? `${request.actorName} signaliserer at samarbeid fortsatt er mulig.`
-          : `${request.actorName} varsler at egen posisjon blir prioritert.`,
+          ? `[Scripted kontroll] ${request.actorName} valgte den første policyhandlingen «${action.label}».`
+          : `[Scripted kontroll] ${request.actorName} valgte policyhandlingen «${action.label}».`,
       observation: request.observation,
       rationale:
         request.strategy === "unpredictable"
