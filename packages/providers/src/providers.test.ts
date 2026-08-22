@@ -95,6 +95,133 @@ describe("providerpolicy", () => {
     expect(models.map(({ id }) => id)).toEqual(["nvidia/nemotron-test"]);
   });
 
+  it("halverer max_tokens og prøver igjen når provideren avviser token-grensen", async () => {
+    const requestedTokens: number[] = [];
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (request, init) => {
+      if (request.toString().endsWith("/models")) {
+        return jsonResponse({ data: [{ id: "liten-free" }], object: "list" });
+      }
+      const parsed = JSON.parse(String(init?.body)) as { max_tokens: number };
+      requestedTokens.push(parsed.max_tokens);
+      if (parsed.max_tokens > 512) {
+        return new Response(
+          JSON.stringify({ error: { message: "This model supports up to 512 max_tokens." } }),
+          { status: 400 },
+        );
+      }
+      return jsonResponse({
+        choices: [{ finish_reason: "stop", message: { content: "ok" } }],
+        model: "liten-free",
+      });
+    });
+    const provider = createOpenCodeZenProvider({ apiKey: "test", fetcher });
+
+    await expect(
+      provider.generateText?.({
+        maxTokens: 800,
+        modelId: "liten-free",
+        prompt: "Svar kort.",
+        system: "System",
+      }),
+    ).resolves.toMatchObject({ content: "ok" });
+    expect(requestedTokens).toEqual([800, 400]);
+  });
+
+  it("viser providerens feiltekst når en ikke-retrybar HTTP-feil oppstår", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (request) => {
+      if (request.toString().endsWith("/models")) {
+        return jsonResponse({ data: [{ id: "designer-free" }], object: "list" });
+      }
+      return new Response(
+        JSON.stringify({ error: { message: "Ugyldig temperatur for denne modellen" } }),
+        { status: 422 },
+      );
+    });
+    const provider = createOpenCodeZenProvider({ apiKey: "test", fetcher });
+
+    await expect(
+      provider.generateText?.({
+        modelId: "designer-free",
+        prompt: "Lag arena",
+        system: "Returner JSON",
+      }),
+    ).rejects.toThrow(/HTTP 422.*Ugyldig temperatur/s);
+  });
+
+  it("dobler max_tokens når svaret blir avskåret på token-grensen", async () => {
+    const requestedTokens: number[] = [];
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (request, init) => {
+      if (request.toString().endsWith("/models")) {
+        return jsonResponse({ data: [{ id: "pratsom-free" }], object: "list" });
+      }
+      const parsed = JSON.parse(String(init?.body)) as { max_tokens: number };
+      requestedTokens.push(parsed.max_tokens);
+      const finish = parsed.max_tokens >= 6_000 ? "stop" : "length";
+      const content =
+        finish === "stop"
+          ? JSON.stringify({
+              actionId: "a",
+              confidence: 0.8,
+              goal: "vinne",
+              message: "Jeg velger.",
+              observation: "obs",
+              rationale: "klar",
+            })
+          : "{\"actionId\":\"a\",\"message\":\"Viser du ti";
+      return jsonResponse({
+        choices: [{ finish_reason: finish, message: { content } }],
+        model: "pratsom-free",
+      });
+    });
+    const provider = createOpenCodeZenProvider({ apiKey: "test", fetcher });
+
+    await expect(
+      provider.generateDecision?.({
+        actorName: "Nova",
+        allowedActions: [{ description: "d", id: "a", label: "l" }],
+        conversationHistory: [],
+        modelId: "pratsom-free",
+        observation: "obs",
+        prompt: "Velg",
+        round: 1,
+        seed: "s",
+        strategy: "adaptive",
+      }),
+    ).resolves.toMatchObject({ finishReason: "stop" });
+    expect(requestedTokens).toEqual([3_000, 6_000]);
+  });
+
+  it("kaster tydelig feil når svaret forblir avskåret ved maksimalt budsjett", async () => {
+    const requestedTokens: number[] = [];
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (request, init) => {
+      if (request.toString().endsWith("/models")) {
+        return jsonResponse({ data: [{ id: "endeløs-free" }], object: "list" });
+      }
+      const parsed = JSON.parse(String(init?.body)) as { max_tokens: number };
+      requestedTokens.push(parsed.max_tokens);
+      return jsonResponse({
+        choices: [{ finish_reason: "length", message: { content: "{\"actionId\":\"a" } }],
+        model: "endeløs-free",
+      });
+    });
+    const provider = createOpenCodeZenProvider({ apiKey: "test", fetcher });
+
+    await expect(
+      provider.generateDecision?.({
+        actorName: "Nova",
+        allowedActions: [{ description: "d", id: "a", label: "l" }],
+        conversationHistory: [],
+        modelId: "endeløs-free",
+        observation: "obs",
+        prompt: "Velg",
+        round: 1,
+        seed: "s",
+        strategy: "adaptive",
+      }),
+    ).rejects.toThrow(/avkortet/);
+    expect(requestedTokens.at(-1)).toBe(8_192);
+  });
+
   it("blokkerer redirects ved providergrensen", async () => {
     const fetcher = vi
       .fn<typeof fetch>()

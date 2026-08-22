@@ -1,4 +1,5 @@
 import {
+  MemoryCategorySchema,
   MemorySnapshotSchema,
   VirtualAgentFileSchema,
   createDeterministicId,
@@ -41,13 +42,7 @@ export const MutationProposalSchema = z
       .array(
         z
           .object({
-            category: z.enum([
-              "mistake",
-              "opponent_model",
-              "principle",
-              "successful_pattern",
-              "world_model",
-            ]),
+            category: MemoryCategorySchema,
             content: z.string().trim().min(1).max(1_000),
           })
           .strict(),
@@ -174,6 +169,7 @@ export function buildMutationPrompt(input: {
       `Observerbare kampdata:\n${renderEvidence(input.evidence)}`,
       "Lag en målrettet mutasjon. Behold gode prinsipper, korriger dokumenterte svakheter og unngå å overtilpasse til én seed eller motstander.",
       "JSON-felt: soul, communicationPolicy, objectives (array), riskProfile (0..1), files (array med bare øvrige filer som skal endres, path/content/mediaType), memoryWrites (array med category/content) og summary. Filer som ikke oppgis, beholdes uendret.",
+      "memoryWrites.category skal være nøyaktig én av: \"mistake\", \"opponent_model\", \"principle\", \"successful_pattern\", \"world_model\".",
       "files-feltet kan bare inneholde policy.md, memory-policy.md og tools.md. SOUL.md, objectives.md, risk-profile.json og communication-policy.md styres av de egne JSON-feltene. summary skal være en kort brukerrettet forklaring, ikke en tankerekke.",
     ].join("\n\n"),
   };

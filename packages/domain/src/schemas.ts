@@ -141,15 +141,52 @@ export const VirtualAgentFileSchema = z
 
 export type VirtualAgentFile = z.infer<typeof VirtualAgentFileSchema>;
 
+const memoryCategoryAliases: Record<string, string> = {
+  context: "world_model",
+  error: "mistake",
+  failure: "mistake",
+  feil: "mistake",
+  feilanalyse: "mistake",
+  good_pattern: "successful_pattern",
+  insight: "principle",
+  kontekst: "world_model",
+  lesson: "principle",
+  lærdom: "principle",
+  mistake: "mistake",
+  motstander: "opponent_model",
+  motstandermodell: "opponent_model",
+  opponent: "opponent_model",
+  opponent_model: "opponent_model",
+  opponentmodel: "opponent_model",
+  principle: "principle",
+  prinsipp: "principle",
+  regle: "principle",
+  regel: "principle",
+  success: "successful_pattern",
+  successful: "successful_pattern",
+  successful_pattern: "successful_pattern",
+  suksess: "successful_pattern",
+  verdensmodell: "world_model",
+  verden: "world_model",
+  winner_pattern: "successful_pattern",
+  world: "world_model",
+  world_model: "world_model",
+};
+
+function normalizeMemoryCategory(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const key = value.trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
+  return memoryCategoryAliases[key] ?? "principle";
+}
+
+export const MemoryCategorySchema = z.preprocess(
+  normalizeMemoryCategory,
+  z.enum(["mistake", "opponent_model", "principle", "successful_pattern", "world_model"]),
+);
+
 export const MemoryWriteCandidateSchema = z
   .object({
-    category: z.enum([
-      "mistake",
-      "opponent_model",
-      "principle",
-      "successful_pattern",
-      "world_model",
-    ]),
+    category: MemoryCategorySchema,
     content: z.string().trim().min(1).max(1_000),
   })
   .strict();
@@ -338,13 +375,7 @@ export type GenomeSnapshot = z.infer<typeof GenomeSnapshotSchema>;
 
 export const MemoryItemSchema = z
   .object({
-    category: z.enum([
-      "mistake",
-      "opponent_model",
-      "principle",
-      "successful_pattern",
-      "world_model",
-    ]),
+    category: MemoryCategorySchema,
     content: z.string().trim().min(1).max(1000),
     createdAt: IsoDateSchema,
     sourceMatchId: EntityIdSchema,

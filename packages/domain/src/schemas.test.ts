@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { ArenaSpecSchema, DuelRequestSchema, schemaVersion } from "./schemas";
+import {
+  ArenaSpecSchema,
+  DecisionTraceSchema,
+  DuelRequestSchema,
+  MemoryWriteCandidateSchema,
+  schemaVersion,
+} from "./schemas";
 
 const validArena = {
   actions: [
@@ -69,5 +75,28 @@ describe("DuelRequestSchema", () => {
         seed: "norsk-test",
       }),
     ).toThrow(/nøyaktig én/);
+  });
+});
+
+describe("MemoryCategorySchema", () => {
+  it("normaliserer vanlige synonymer til gyldig minnekategori", () => {
+    const trace = DecisionTraceSchema.parse({
+      actionId: "sannhet",
+      confidence: 0.8,
+      goal: "teste",
+      message: "melding",
+      memoryWrite: { category: "motstander", content: "Motstanderen bluffet i runde to." },
+      observation: "obs",
+      rationale: "begrunnelse",
+    });
+    expect(trace.memoryWrite?.category).toBe("opponent_model");
+  });
+
+  it("faller tilbake til principle ved helt ukjent kategori", () => {
+    const candidate = MemoryWriteCandidateSchema.parse({
+      category: "hemmelig_kode",
+      content: "Ukjent kategori blir trygg standard.",
+    });
+    expect(candidate.category).toBe("principle");
   });
 });

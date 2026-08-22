@@ -172,6 +172,16 @@ async function readBoundedJsonResponse(
   }
 }
 
+async function readBoundedErrorBody(response: Response): Promise<string | undefined> {
+  try {
+    const text = await response.text();
+    const sanitized = text.replace(/\s+/g, " ").trim();
+    return sanitized.length === 0 ? undefined : sanitized.slice(0, 300);
+  } catch {
+    return undefined;
+  }
+}
+
 export class OpenAICompatibleProvider implements ModelProvider {
   readonly id: OpenAICompatibleProviderOptions["id"];
   readonly #apiKey: string | undefined;
@@ -268,6 +278,48 @@ export class OpenAICompatibleProvider implements ModelProvider {
     });
   }
 
+  async #chatCompletion(init: {
+    defaultMaxTokens: number;
+    messages: ReadonlyArray<{ content: string; role: string }>;
+    modelId: string;
+    requestedMaxTokens?: number | undefined;
+    temperature?: number | undefined;
+  }): Promise<z.infer<typeof ChatCompletionSchema>> {
+    let maxTokens = Math.max(64, Math.min(8_192, init.requestedMaxTokens ?? init.defaultMaxTokens));
+    for (;;) {
+      let response: z.infer<typeof ChatCompletionSchema>;
+      try {
+        response = await this.#requestJson(
+          "/chat/completions",
+          {
+            body: JSON.stringify({
+              max_tokens: maxTokens,
+              messages: init.messages.map(({ content, role }) => ({ content, role })),
+              model: init.modelId,
+              stream: false,
+              ...(init.temperature === undefined ? {} : { temperature: init.temperature }),
+            }),
+            headers: { "Content-Type": "application/json" },
+            method: "POST",
+          },
+          ChatCompletionSchema,
+          completionResponseLimitBytes,
+        );
+      } catch (error) {
+        const tokenLimitRejection =
+          error instanceof ProviderError &&
+          error.status === 400 &&
+          /max[_ ]?tokens|maximum context|context length/i.test(error.message);
+        if (!tokenLimitRejection || maxTokens <= 512) throw error;
+        maxTokens = Math.floor(maxTokens / 2);
+        continue;
+      }
+      const finishReason = response.choices[0]?.finish_reason;
+      if (finishReason !== "length" || maxTokens >= 8_192) return response;
+      maxTokens = Math.min(8_192, maxTokens * 2);
+    }
+  }
+
   async generateDecision(request: DecisionRequest): Promise<DecisionResult> {
     if (this.#apiKey === undefined || this.#apiKey.length === 0) {
       throw new ProviderError("not-configured", `${this.id} mangler API-nøkkel`);
@@ -276,33 +328,29 @@ export class OpenAICompatibleProvider implements ModelProvider {
     assertFreePolicy(model, this.#policy.freeOnly);
 
     const startedAt = performance.now();
-    const body = await this.#requestJson(
-      "/chat/completions",
-      {
-        body: JSON.stringify({
-          max_tokens: 1_500,
-          messages: [
-            {
-              content:
-                "Du er en arena-agent som spiller i egen karakter. Svar alltid som agenten selv, i førsteperson. Reager konkret på motpartens faktiske melding og la ordvalg, mål og handling følge din SOUL.md, ditt minne og situasjonen. Ikke bruk generiske standardreplikker. Returner BARE ett JSON-objekt med feltene actionId, message, observation, goal, rationale, confidence og valgfritt memoryWrite {category, content}. Returner aldri privat tankerekke eller tekst utenfor objektet.",
-              role: "system",
-            },
-            { content: request.prompt, role: "user" },
-          ],
-          model: request.modelId,
-          stream: false,
-          temperature: 0.2,
-        }),
-        headers: { "Content-Type": "application/json" },
-        method: "POST",
-      },
-      ChatCompletionSchema,
-      completionResponseLimitBytes,
-    );
+    const body = await this.#chatCompletion({
+      defaultMaxTokens: 3_000,
+      messages: [
+        {
+          content:
+            "Du er en arena-agent som spiller i egen karakter. Svar alltid som agenten selv, i førsteperson: la meldingen og begrunnelsen gjenspeile agentens navn, sjel, strategi og situasjonen i observasjonen. Vær konkret og personlig, aldri generisk. Meldingen skal være maks to setninger. Returner likevel BARE ett JSON-objekt med feltene actionId, message, observation, goal, rationale og confidence — ingen tankerekke, forklaring eller tekst utenfor objektet.",
+          role: "system",
+        },
+        { content: request.prompt, role: "user" },
+      ],
+      modelId: request.modelId,
+      temperature: 0.2,
+    });
     this.#assertModelIdentity(body.model, request.modelId);
     const firstChoice = body.choices[0];
     if (firstChoice === undefined) {
       throw new ProviderError("invalid-response", "Provideren returnerte ingen valg");
+    }
+    if (firstChoice.finish_reason === "length") {
+      throw new ProviderError(
+        "invalid-response",
+        "Provideren avkortet beslutningen midt i svaret selv ved maksimal token-budsjett",
+      );
     }
 
     return {
@@ -330,25 +378,16 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const model = await this.#findModel(request.modelId);
     assertFreePolicy(model, this.#policy.freeOnly);
     const startedAt = performance.now();
-    const body = await this.#requestJson(
-      "/chat/completions",
-      {
-        body: JSON.stringify({
-          max_tokens: request.maxTokens ?? 2_000,
-          messages: [
-            { content: request.system, role: "system" },
-            { content: request.prompt, role: "user" },
-          ],
-          model: request.modelId,
-          stream: false,
-          temperature: request.temperature ?? 0.15,
-        }),
-        headers: { "Content-Type": "application/json" },
-        method: "POST",
-      },
-      ChatCompletionSchema,
-      completionResponseLimitBytes,
-    );
+    const body = await this.#chatCompletion({
+      defaultMaxTokens: 2_000,
+      messages: [
+        { content: request.system, role: "system" },
+        { content: request.prompt, role: "user" },
+      ],
+      modelId: request.modelId,
+      requestedMaxTokens: request.maxTokens,
+      temperature: request.temperature ?? 0.15,
+    });
     this.#assertModelIdentity(body.model, request.modelId);
     const firstChoice = body.choices[0];
     if (firstChoice === undefined) {
@@ -473,12 +512,14 @@ export class OpenAICompatibleProvider implements ModelProvider {
           this.#consecutiveFailures = 0;
           return parsed.data;
         }
-        await response.body?.cancel("HTTP-feil fra provider");
+        const detail = await readBoundedErrorBody(response);
         const retryable = response.status === 429 || response.status >= 500;
         if (!retryable) {
-          throw new ProviderError("request-failed", `Provideren svarte HTTP ${response.status}`, {
-            status: response.status,
-          });
+          throw new ProviderError(
+            "request-failed",
+            `Provideren svarte HTTP ${response.status}${detail === undefined ? "" : `: ${detail}`}`,
+            { status: response.status },
+          );
         }
         lastError = new ProviderError(
           response.status === 429 ? "rate-limited" : "request-failed",
