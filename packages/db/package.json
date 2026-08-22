@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
@@ -11,10 +13,10 @@
     "@ai-lab/agents": "workspace:*",
     "@ai-lab/domain": "workspace:*",
     "pg": "^8.16.3",
+    "pg-mem": "^3.0.5",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@types/pg": "^8.15.5",
-    "pg-mem": "^3.0.5"
+    "@types/pg": "^8.15.5"
   }
 }

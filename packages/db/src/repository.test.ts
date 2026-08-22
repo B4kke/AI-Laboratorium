@@ -130,4 +130,15 @@ describe("LaboratoryRepository", () => {
 
     await repository.close();
   });
+
+  it("boots et lokalt pgmem-repositorium via createLaboratoryRepository", async () => {
+    const { createLaboratoryRepository, ensureRepositorySchema } = await import("./repository");
+    const repository = await createLaboratoryRepository("pgmem:local").then(ensureRepositorySchema);
+    const snapshot = snapshotFixture(0);
+
+    await repository.saveAgentSnapshot(snapshot);
+
+    expect(await repository.getAgentSnapshot(snapshot.agentId)).not.toBeNull();
+    await repository.close();
+  });
 });

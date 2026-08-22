@@ -269,7 +269,7 @@ async function pause(milliseconds: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const repository = await ensureRepositorySchema(createLaboratoryRepository(databaseUrl()));
+  const repository = await createLaboratoryRepository(databaseUrl()).then(ensureRepositorySchema);
   const stop = () => {
     stopping = true;
   };

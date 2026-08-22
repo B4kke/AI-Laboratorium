@@ -158,6 +158,9 @@ importers:
       pg:
         specifier: ^8.16.3
         version: 8.23.0
+      pg-mem:
+        specifier: ^3.0.5
+        version: 3.0.14
       zod:
         specifier: ^4.3.6
         version: 4.4.3
@@ -165,9 +168,6 @@ importers:
       '@types/pg':
         specifier: ^8.15.5
         version: 8.23.1
-      pg-mem:
-        specifier: ^3.0.5
-        version: 3.0.14
 
   packages/domain:
     dependencies:

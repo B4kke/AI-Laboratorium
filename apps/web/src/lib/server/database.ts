@@ -24,7 +24,7 @@ export function getLaboratoryRepository(): Promise<LaboratoryRepository> {
       "Agentbibliotek og Evolution krever en konfigurert PostgreSQL DATABASE_URL",
     );
   }
-  repositoryPromise ??= ensureRepositorySchema(createLaboratoryRepository(configured));
+  repositoryPromise ??= createLaboratoryRepository(configured).then(ensureRepositorySchema);
   return repositoryPromise;
 }
 

@@ -390,10 +390,18 @@ export class LaboratoryRepository {
   }
 }
 
-export function createLaboratoryRepository(connectionString: string): LaboratoryRepository {
+export async function createLaboratoryRepository(connectionString: string): Promise<LaboratoryRepository> {
+  if (connectionString.startsWith("pgmem:")) {
+    // Lokal utviklingsmodus: Postgres i prosessen via pg-mem. Data lever bare
+    // så lenge prosessen kjører - ingen ekstern tjeneste kreves.
+    const { newDb } = await import("pg-mem");
+    const database = newDb({ autoCreateForeignKeyIndices: true });
+    const adapter = database.adapters.createPg();
+    return new LaboratoryRepository(new adapter.Pool() as unknown as Pool);
+  }
   const url = new URL(connectionString);
   if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
-    throw new Error("DATABASE_URL må bruke postgres:// eller postgresql://");
+    throw new Error("DATABASE_URL må bruke postgres://, postgresql:// eller pgmem:");
   }
   const configuredPoolSize = Number(process.env.DATABASE_POOL_SIZE ?? 5);
   const poolSize = Number.isInteger(configuredPoolSize)
