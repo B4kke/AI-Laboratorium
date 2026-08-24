@@ -1,12 +1,16 @@
 import {
   AgentSnapshotSchema,
   DuelResultSchema,
+  EventEnvelopeSchema,
   LineageEdgeSchema,
+  ProviderSnapshotSchema,
   createDeterministicId,
   type AgentSnapshot,
   type DuelResult,
   type EntityId,
+  type EventEnvelope,
   type LineageEdge,
+  type ProviderSnapshot,
 } from "@ai-lab/domain";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
 import { z } from "zod";
@@ -37,6 +41,25 @@ export type EvolutionJob<TInput = unknown, TResult = unknown> = {
   result: TResult | null;
   status: EvolutionJobStatus;
   updatedAt: string;
+};
+
+export type EvolutionStepKind = "duel" | "mutation" | "population";
+
+export type EvolutionStep<TPayload = unknown> = {
+  jobId: EntityId;
+  kind: EvolutionStepKind;
+  payload: TPayload;
+  stepId: string;
+};
+
+export type EvolutionFeedItem = {
+  actionId: string;
+  actorName: string;
+  generationNumber: number;
+  matchId: EntityId;
+  message: string;
+  rationale: string;
+  round: number;
 };
 
 type Queryable = {
@@ -200,6 +223,28 @@ export class LaboratoryRepository {
     return row === undefined ? null : AgentSnapshotSchema.parse(row.snapshot);
   }
 
+  async listAgentSnapshots(agentId: EntityId): Promise<readonly AgentSnapshot[]> {
+    const result = await this.#pool.query<{ snapshot: unknown }>(
+      `SELECT snapshot FROM agent_snapshots
+       WHERE agent_id=$1
+       ORDER BY generation ASC, created_at ASC, id ASC`,
+      [agentId],
+    );
+    return result.rows.map(({ snapshot }) => AgentSnapshotSchema.parse(snapshot));
+  }
+
+  async listLineageForGenomeIds(genomeIds: readonly EntityId[]): Promise<readonly LineageEdge[]> {
+    if (genomeIds.length === 0) return [];
+    const result = await this.#pool.query<{ edge: unknown }>(
+      `SELECT edge FROM lineage_edges
+       WHERE child_genome_id = ANY($1::text[])
+          OR parent_genome_ids && $1::text[]
+       ORDER BY created_at ASC, id ASC`,
+      [genomeIds],
+    );
+    return result.rows.map(({ edge }) => LineageEdgeSchema.parse(edge));
+  }
+
   async listAgents(limit = 100): Promise<readonly AgentListItem[]> {
     const safeLimit = Math.max(1, Math.min(500, Math.trunc(limit)));
     const result = await this.#pool.query(
@@ -240,6 +285,18 @@ export class LaboratoryRepository {
     return row === undefined ? null : toAgentListItem(row);
   }
 
+  async getLatestChampionSnapshot(): Promise<AgentSnapshot | null> {
+    const result = await this.#pool.query<{ snapshot: unknown }>(
+      `SELECT s.snapshot
+       FROM agents a JOIN agent_snapshots s ON s.id = a.current_snapshot_id
+       WHERE a.status='champion'
+       ORDER BY a.updated_at DESC, a.serial_number DESC
+       LIMIT 1`,
+    );
+    const row = result.rows[0];
+    return row === undefined ? null : AgentSnapshotSchema.parse(row.snapshot);
+  }
+
   async updateAgentStatus(
     agentId: EntityId,
     status: AgentSnapshot["status"],
@@ -272,13 +329,26 @@ export class LaboratoryRepository {
     });
   }
 
-  async saveDuel(resultInput: DuelResult): Promise<void> {
+  async saveDuel(
+    resultInput: DuelResult,
+    context: {
+      evolutionJobId?: EntityId;
+      evolutionStepId?: string;
+      generationNumber?: number;
+    } = {},
+  ): Promise<void> {
     const result = DuelResultSchema.parse(resultInput);
     await transaction(this.#pool, async (client) => {
       await client.query(
-        `INSERT INTO duel_runs(match_id, arena_id, arena_version, seed, result, completed_at)
-         VALUES ($1,$2,$3,$4,$5::jsonb,$6)
-         ON CONFLICT (match_id) DO NOTHING`,
+        `INSERT INTO duel_runs(
+           match_id, arena_id, arena_version, seed, result, completed_at,
+           evolution_job_id, generation_number, evolution_step_id
+         )
+         VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9)
+         ON CONFLICT (match_id) DO UPDATE SET
+           evolution_job_id=COALESCE(duel_runs.evolution_job_id, EXCLUDED.evolution_job_id),
+           generation_number=COALESCE(duel_runs.generation_number, EXCLUDED.generation_number),
+           evolution_step_id=COALESCE(duel_runs.evolution_step_id, EXCLUDED.evolution_step_id)`,
         [
           result.matchId,
           result.arena.id,
@@ -286,6 +356,9 @@ export class LaboratoryRepository {
           result.seed,
           JSON.stringify(result),
           result.completedAt,
+          context.evolutionJobId ?? null,
+          context.generationNumber ?? null,
+          context.evolutionStepId ?? null,
         ],
       );
       for (const event of result.events) {
@@ -297,6 +370,130 @@ export class LaboratoryRepository {
         );
       }
     });
+  }
+
+  async saveProviderSnapshot(runId: EntityId, snapshotInput: ProviderSnapshot): Promise<void> {
+    const snapshot = ProviderSnapshotSchema.parse(snapshotInput);
+    await this.#pool.query(
+      `INSERT INTO provider_snapshots(
+         run_id, snapshot_id, provider_id, model_id, snapshot, captured_at
+       ) VALUES ($1,$2,$3,$4,$5::jsonb,$6)
+       ON CONFLICT (run_id, snapshot_id) DO NOTHING`,
+      [
+        runId,
+        snapshot.id,
+        snapshot.providerId,
+        snapshot.modelId,
+        JSON.stringify(snapshot),
+        snapshot.capturedAt,
+      ],
+    );
+  }
+
+  async saveEvolutionStep<TPayload>(
+    jobId: EntityId,
+    stepId: string,
+    kind: EvolutionStepKind,
+    payload: TPayload,
+  ): Promise<void> {
+    if (stepId.length === 0 || stepId.length > 200) throw new Error("Ugyldig Evolution-steg-ID");
+    await this.#pool.query(
+      `INSERT INTO evolution_steps(job_id, step_id, kind, payload)
+       VALUES ($1,$2,$3,$4::jsonb)
+       ON CONFLICT (job_id, step_id) DO NOTHING`,
+      [jobId, stepId, kind, JSON.stringify(payload)],
+    );
+  }
+
+  async getEvolutionStep<TPayload = unknown>(
+    jobId: EntityId,
+    stepId: string,
+    kind: EvolutionStepKind,
+  ): Promise<EvolutionStep<TPayload> | null> {
+    const result = await this.#pool.query<{ kind: EvolutionStepKind; payload: TPayload }>(
+      `SELECT kind, payload FROM evolution_steps WHERE job_id=$1 AND step_id=$2 AND kind=$3`,
+      [jobId, stepId, kind],
+    );
+    const row = result.rows[0];
+    return row === undefined ? null : { jobId, kind: row.kind, payload: row.payload, stepId };
+  }
+
+  async listEvolutionJobs<TInput = unknown, TResult = unknown>(
+    limit = 20,
+  ): Promise<readonly EvolutionJob<TInput, TResult>[]> {
+    const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+    const result = await this.#pool.query(
+      `SELECT * FROM evolution_jobs ORDER BY created_at DESC LIMIT $1`,
+      [safeLimit],
+    );
+    return result.rows.map((row) => toJob<TInput, TResult>(row));
+  }
+
+  async listEvolutionFeed(jobId: EntityId, limit = 30): Promise<readonly EvolutionFeedItem[]> {
+    const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+    const result = await this.#pool.query<{ event: unknown; generation_number: number }>(
+      `SELECT generation_number, event FROM evolution_feed_events
+       WHERE job_id=$1
+       ORDER BY occurred_at DESC, event_id DESC
+       LIMIT $2`,
+      [jobId, safeLimit * 4],
+    );
+    return result.rows
+      .toReversed()
+      .flatMap((row) => {
+        const event = EventEnvelopeSchema.parse(row.event);
+        if (event.type !== "agent.decided") return [];
+        const payload = event.payload as {
+          actorName?: unknown;
+          round?: unknown;
+          trace?: {
+            actionId?: unknown;
+            message?: unknown;
+            rationale?: unknown;
+          };
+        };
+        if (
+          typeof payload.actorName !== "string" ||
+          typeof payload.round !== "number" ||
+          typeof payload.trace?.actionId !== "string" ||
+          typeof payload.trace.message !== "string" ||
+          typeof payload.trace.rationale !== "string"
+        ) {
+          return [];
+        }
+        return [{
+          actionId: payload.trace.actionId,
+          actorName: payload.actorName,
+          generationNumber: row.generation_number,
+          matchId: event.matchId,
+          message: payload.trace.message,
+          rationale: payload.trace.rationale,
+          round: payload.round,
+        }];
+      })
+      .slice(-safeLimit);
+  }
+
+  async saveEvolutionFeedEvent(
+    jobId: EntityId,
+    stepId: string,
+    generationNumber: number,
+    eventInput: EventEnvelope,
+  ): Promise<void> {
+    if (stepId.length === 0 || stepId.length > 200) throw new Error("Ugyldig Evolution-steg-ID");
+    if (!Number.isInteger(generationNumber) || generationNumber < 0) {
+      throw new Error("Ugyldig generasjonsnummer for Evolution-feed");
+    }
+    const event = EventEnvelopeSchema.parse(eventInput);
+    await this.#pool.query(
+      `INSERT INTO evolution_feed_events(
+       event_id, job_id, step_id, generation_number, event, occurred_at
+       ) VALUES ($1,$2,$3,$4,$5::jsonb,$6)
+       ON CONFLICT (event_id) DO UPDATE SET
+         event=EXCLUDED.event,
+         occurred_at=EXCLUDED.occurred_at`,
+      [event.id, jobId, stepId, generationNumber, JSON.stringify(event), event.occurredAt],
+    );
   }
 
   async enqueueEvolution<TInput>(input: TInput, clock = new Date()): Promise<EvolutionJob<TInput>> {
@@ -325,11 +522,13 @@ export class LaboratoryRepository {
     workerId: string,
     leaseTimeoutSeconds = 300,
   ): Promise<EvolutionJob<TInput> | null> {
+    const safeLeaseTimeoutSeconds = Math.max(30, Math.trunc(leaseTimeoutSeconds));
+    const staleBefore = new Date(Date.now() - safeLeaseTimeoutSeconds * 1_000).toISOString();
     const result = await this.#pool.query(
       `WITH next_job AS (
          SELECT id FROM evolution_jobs
          WHERE status='queued'
-            OR (status='running' AND leased_at < now() - ($2 * interval '1 second'))
+            OR (status='running' AND leased_at < $2)
          ORDER BY created_at
          LIMIT 1
          FOR UPDATE SKIP LOCKED
@@ -339,7 +538,7 @@ export class LaboratoryRepository {
        FROM next_job
        WHERE j.id=next_job.id
        RETURNING j.*`,
-      [workerId, Math.max(30, Math.trunc(leaseTimeoutSeconds))],
+      [workerId, staleBefore],
     );
     const row = result.rows[0];
     return row === undefined ? null : toJob<TInput, never>(row);
@@ -385,6 +584,16 @@ export class LaboratoryRepository {
        SET status='failed', error=$2, leased_at=NULL, updated_at=now()
        WHERE id=$1 AND status='running' AND lease_owner=$3`,
       [id, error.slice(0, 4_000), workerId],
+    );
+    return result.rowCount === 1;
+  }
+
+  async releaseEvolution(id: EntityId, workerId: string): Promise<boolean> {
+    const result = await this.#pool.query(
+      `UPDATE evolution_jobs
+       SET status='queued', lease_owner=NULL, leased_at=NULL, updated_at=now()
+       WHERE id=$1 AND status='running' AND lease_owner=$2`,
+      [id, workerId],
     );
     return result.rowCount === 1;
   }

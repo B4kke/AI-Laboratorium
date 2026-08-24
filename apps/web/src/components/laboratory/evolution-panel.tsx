@@ -1,11 +1,17 @@
 "use client";
 
 import type { ArenaSpec } from "@ai-lab/domain";
-import type {
-  EvolutionProgress,
-  EvolutionRequest,
-  StoredEvolutionResult,
+import {
+  estimateProviderCalls,
+  evolutionPopulationSchedule,
+  type EvolutionProgress,
+  type EvolutionRequest,
+  type StoredEvolutionResult,
 } from "@ai-lab/evolution";
+import type {
+  EvolutionJob,
+  EvolutionFeedItem,
+} from "@ai-lab/db";
 import {
   Activity,
   ArrowRight,
@@ -20,8 +26,10 @@ import {
   Trash2,
   Trophy,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { MessageResponse } from "@/components/ai-elements/message";
+import { AgentHistoryPanel } from "@/components/laboratory/agent-history-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -37,9 +45,12 @@ import {
   readApiResponse,
   type AgentLibraryResponse,
   type EvolutionEnqueueResponse,
+  type EvolutionJobsResponse,
   type EvolutionStatusResponse,
   type ProviderCatalogEntry,
 } from "@/lib/laboratory-types";
+
+const storedEvolutionJobKey = "ai-lab:evolution-job:v1";
 
 type RemoteProviderId = "nvidia-nim" | "opencode-zen";
 
@@ -95,7 +106,7 @@ export function EvolutionPanel({
   const [arenaId, setArenaId] = useState(arenas[0]?.id ?? "fangens-dilemma");
   const [seed, setSeed] = useState("evolusjon-2026");
   const [generationCount, setGenerationCount] = useState(10);
-  const [populationSize, setPopulationSize] = useState(6);
+  const [populationSize, setPopulationSize] = useState(10);
   const [trialsPerCandidate, setTrialsPerCandidate] = useState(2);
   const [holdoutTrials, setHoldoutTrials] = useState(6);
   const [concurrency, setConcurrency] = useState(2);
@@ -109,14 +120,85 @@ export function EvolutionPanel({
   const [job, setJob] = useState<
     EvolutionEnqueueResponse["job"] | EvolutionStatusResponse["job"] | null
   >(null);
+  const [feed, setFeed] = useState<readonly EvolutionFeedItem[]>([]);
+  const [recentJobs, setRecentJobs] = useState<
+    readonly EvolutionJob<EvolutionRequest, StoredEvolutionResult>[]
+  >([]);
   const pollController = useRef<AbortController | null>(null);
 
-  useEffect(
-    () => () => {
-      pollController.current?.abort();
+  const refreshJobList = useCallback(
+    async (signal?: AbortSignal) => {
+      const response = await fetch("/api/evolution", {
+        headers: authorizationHeaders(accessToken),
+        ...(signal === undefined ? {} : { signal }),
+      });
+      const body = await readApiResponse<EvolutionJobsResponse>(response);
+      setRecentJobs(body.jobs);
+      return body.jobs;
     },
-    [],
+    [accessToken],
   );
+
+  const pollJob = useCallback(
+    async (jobId: string, controller: AbortController) => {
+      setRunning(true);
+      localStorage.setItem(storedEvolutionJobKey, jobId);
+      try {
+        while (!controller.signal.aborted) {
+          const response = await fetch(`/api/evolution/${jobId}`, {
+            headers: authorizationHeaders(accessToken),
+            signal: controller.signal,
+          });
+          const status = await readApiResponse<EvolutionStatusResponse>(response);
+          setJob(status.job);
+          setFeed(status.feed);
+          if (status.job.status === "completed" && status.job.result !== null) {
+            setResult(status.job.result);
+            await Promise.all([onAgentsChanged(), refreshJobList(controller.signal)]);
+            return;
+          }
+          if (status.job.status === "failed") {
+            throw new Error(status.job.error ?? "Evolution-jobben feilet");
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1_500));
+        }
+      } finally {
+        if (pollController.current === controller) {
+          pollController.current = null;
+          setRunning(false);
+        }
+      }
+    },
+    [accessToken, onAgentsChanged, refreshJobList],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    pollController.current?.abort();
+    pollController.current = controller;
+    async function restore() {
+      try {
+        const jobs = await refreshJobList(controller.signal);
+        const storedId = localStorage.getItem(storedEvolutionJobKey);
+        const stored = jobs.find(({ id }) => id === storedId);
+        if (stored === undefined) return;
+        setJob(stored);
+        if (stored.status === "completed" && stored.result !== null) {
+          setResult(stored.result);
+          return;
+        }
+        if (stored.status === "queued" || stored.status === "running") {
+          await pollJob(stored.id, controller);
+        }
+      } catch (caught) {
+        if (!(caught instanceof DOMException && caught.name === "AbortError")) {
+          setError(caught instanceof Error ? caught.message : "Evolution-jobben kunne ikke gjenopptas");
+        }
+      }
+    }
+    void restore();
+    return () => controller.abort();
+  }, [pollJob, refreshJobList]);
 
   const remoteModels = useMemo(
     () =>
@@ -149,11 +231,11 @@ export function EvolutionPanel({
     ? mutationModelKey
     : selectedDefaultKey;
   const arena = arenas.find((entry) => entry.id === arenaId) ?? arenas[0];
-  const estimatedProviderCalls =
-    generationCount * populationSize * trialsPerCandidate * (arena?.rounds ?? 0) * 2 +
-    Math.max(0, generationCount - 1) *
-      (populationSize - Math.ceil(populationSize * 0.25)) +
-    holdoutTrials * (arena?.rounds ?? 0) * 2;
+  const estimatedProviderCalls = estimateProviderCalls(
+    { generationCount, holdoutTrials, populationSize, trialsPerCandidate },
+    arena?.rounds ?? 0,
+  );
+  const populationSchedule = evolutionPopulationSchedule(populationSize, generationCount);
   const progress = progressValue(job?.progress);
   const progressPercent =
     progress === null || progress.totalWork === 0
@@ -164,11 +246,11 @@ export function EvolutionPanel({
     return { max: Math.max(...values), min: Math.min(...values) };
   }, [result]);
   const bestLibraryAgent = allSavedAgents.find(
-    ({ agentId }) => agentId === result?.best.agent.agentId,
+    ({ agentId }) => agentId === result?.winner.agentId,
   );
 
   function updatePopulationSize(raw: string) {
-    const next = boundedInteger(raw, 2, 100);
+    const next = boundedInteger(raw, 10, 100);
     setPopulationSize(next);
     setSlotOverrides((current) => current.filter(({ index }) => index < next));
   }
@@ -225,7 +307,6 @@ export function EvolutionPanel({
       },
       generationCount,
       holdoutTrials,
-      maxProviderCalls: 100_000,
       mutationModel: {
         modelId: mutationModel.modelId,
         providerId: mutationModel.providerId,
@@ -253,6 +334,7 @@ export function EvolutionPanel({
     setRunning(true);
     setError(null);
     setResult(null);
+    setFeed([]);
     setJob(null);
     try {
       const enqueueResponse = await fetch("/api/evolution", {
@@ -266,23 +348,9 @@ export function EvolutionPanel({
       });
       const queued = await readApiResponse<EvolutionEnqueueResponse>(enqueueResponse);
       setJob(queued.job);
-      while (!controller.signal.aborted) {
-        const statusResponse = await fetch(`/api/evolution/${queued.job.id}`, {
-          headers: authorizationHeaders(accessToken),
-          signal: controller.signal,
-        });
-        const status = await readApiResponse<EvolutionStatusResponse>(statusResponse);
-        setJob(status.job);
-        if (status.job.status === "completed" && status.job.result !== null) {
-          setResult(status.job.result);
-          await onAgentsChanged();
-          break;
-        }
-        if (status.job.status === "failed") {
-          throw new Error(status.job.error ?? "Evolution-jobben feilet");
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1_500));
-      }
+      localStorage.setItem(storedEvolutionJobKey, queued.job.id);
+      await refreshJobList(controller.signal);
+      await pollJob(queued.job.id, controller);
     } catch (caught) {
       if (!(caught instanceof DOMException && caught.name === "AbortError")) {
         setError(caught instanceof Error ? caught.message : "Evolusjonen feilet");
@@ -295,6 +363,33 @@ export function EvolutionPanel({
     }
   }
 
+  async function openRecentJob(jobId: string) {
+    pollController.current?.abort();
+    const controller = new AbortController();
+    pollController.current = controller;
+    setError(null);
+    setFeed([]);
+    try {
+      await pollJob(jobId, controller);
+    } catch (caught) {
+      if (!(caught instanceof DOMException && caught.name === "AbortError")) {
+        setError(caught instanceof Error ? caught.message : "Evolution-jobben kunne ikke åpnes");
+      }
+    }
+  }
+
+  function prepareWinnerForNextRun() {
+    if (result === null) return;
+    setSlotOverrides((current) => [
+      { agentId: result.winner.agentId, index: 0, modelKey: "default" },
+      ...current.filter(({ index }) => index !== 0),
+    ]);
+    setResult(null);
+    setJob(null);
+    setFeed([]);
+    setError(null);
+  }
+
   return (
     <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
       <aside className="glass-panel h-fit rounded-2xl border border-white/8 p-5 xl:sticky xl:top-20 xl:max-h-[calc(100vh-6rem)] xl:overflow-y-auto">
@@ -305,7 +400,7 @@ export function EvolutionPanel({
           <div>
             <h2 className="font-semibold">Ekte agent-evolusjon</h2>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              Modellkall, immutable SOUL.md-versjoner og persistent minne.
+              Agentselvrefleksjon, hoved-AI, immutable SOUL.md-versjoner og persistent minne.
             </p>
           </div>
         </div>
@@ -325,7 +420,7 @@ export function EvolutionPanel({
 
           <div className="grid grid-cols-2 gap-3">
             <label className="grid gap-1.5 text-xs text-muted-foreground">
-              Generasjoner
+              Evolusjonsrunder
               <Input
                 max={100}
                 min={1}
@@ -340,7 +435,7 @@ export function EvolutionPanel({
               Agenter
               <Input
                 max={100}
-                min={2}
+                min={10}
                 onChange={(event) => updatePopulationSize(event.target.value)}
                 type="number"
                 value={populationSize}
@@ -405,7 +500,7 @@ export function EvolutionPanel({
           </label>
 
           <label className="grid gap-1.5 text-xs text-muted-foreground">
-            Modell som muterer SOUL.md og minne
+            Hoved-AI som endrer SOUL.md, minne og taktikk
             <Select value={selectedMutationKey} onValueChange={setMutationModelKey}>
               <SelectTrigger className="w-full"><SelectValue placeholder="Ingen mutasjonsmodell" /></SelectTrigger>
               <SelectContent>
@@ -528,7 +623,7 @@ export function EvolutionPanel({
 
           <div className="grid grid-cols-3 gap-2 pt-1">
             {[
-              [String(generationCount), "generasjoner"],
+              [String(generationCount), "runder"],
               [String(populationSize), "agenter"],
               [estimatedProviderCalls.toLocaleString("nb-NO"), "modellkall"],
             ].map(([value, label]) => (
@@ -538,14 +633,17 @@ export function EvolutionPanel({
               </div>
             ))}
           </div>
+          <p className="rounded-lg border border-white/7 bg-black/15 p-2 text-[10px] leading-4 text-muted-foreground">
+            Eliminasjonsplan: {populationSchedule.join(" → ")} aktive før rundene, deretter én
+            sluttmutert vinner. Kallestimatet er kun informasjon og stopper aldri kjøringen.
+          </p>
 
           <Button
             className="mt-2 w-full"
             disabled={
               running ||
               seed.trim().length === 0 ||
-              remoteModels.length === 0 ||
-              estimatedProviderCalls > 100_000
+              remoteModels.length === 0
             }
             onClick={startEvolution}
           >
@@ -557,10 +655,29 @@ export function EvolutionPanel({
               Koble til en konfigurert ekstern modellkilde. Scripted baselines kan ikke drive Evolution.
             </p>
           ) : null}
-          {estimatedProviderCalls > 100_000 ? (
-            <p className="text-[10px] leading-4 text-amber-100">
-              Reduser generasjoner, agenter eller dueller; valgt kjøring overstiger 100 000 modellkall.
-            </p>
+          {recentJobs.length > 0 ? (
+            <div className="space-y-2 border-t border-white/7 pt-4">
+              <p className="text-[10px] tracking-[0.12em] text-muted-foreground uppercase">
+                Nylige persistente jobber
+              </p>
+              {recentJobs.slice(0, 5).map((recent) => (
+                <Button
+                  className="h-auto w-full justify-between px-3 py-2 text-left"
+                  key={recent.id}
+                  onClick={() => void openRecentJob(recent.id)}
+                  type="button"
+                  variant="outline"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate font-mono text-[9px]">{recent.id}</span>
+                    <span className="block text-[10px] text-muted-foreground">
+                      {recent.input.populationSize} agenter · {recent.input.generationCount} runder
+                    </span>
+                  </span>
+                  <Badge variant="outline">{recent.status}</Badge>
+                </Button>
+              ))}
+            </div>
           ) : null}
         </div>
       </aside>
@@ -585,6 +702,35 @@ export function EvolutionPanel({
           </section>
         ) : null}
 
+        {feed.length > 0 ? (
+          <section className="mb-6 rounded-xl border border-white/8 bg-black/15 p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <p className="text-sm font-semibold">Faktiske replikker fra Evolution</p>
+              <Badge variant="outline">live fra lagrede dueller</Badge>
+            </div>
+            <div className="max-h-80 space-y-3 overflow-y-auto" aria-live="polite">
+              {feed.slice(-16).map((item, index) => (
+                <article
+                  className="rounded-lg border border-white/7 bg-white/[0.02] p-3"
+                  key={`${item.matchId}-${item.round}-${item.actorName}-${index}`}
+                >
+                  <div className="mb-1 flex flex-wrap items-center gap-2 text-[10px]">
+                    <span className="font-semibold text-cyan-100">{item.actorName}</span>
+                    <span className="text-muted-foreground">
+                      Runde {item.generationNumber + 1} · spillrunde {item.round} · {item.actionId}
+                    </span>
+                  </div>
+                  <div className="text-sm"><MessageResponse>{item.message}</MessageResponse></div>
+                  <div className="mt-2 text-[10px] leading-4 text-muted-foreground">
+                    <span className="font-medium">Kort beslutningsspor: </span>
+                    <MessageResponse>{item.rationale}</MessageResponse>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
         {result === null ? (
           <div className="flex min-h-[560px] flex-col">
             <div>
@@ -595,12 +741,14 @@ export function EvolutionPanel({
                 La faktiske modeller kjempe, lære og versjonere agentfilene.
               </h2>
               <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
-                Hvert valg leser gjeldende SOUL.md og minne. Etter evaluering lager mutasjonsmodellen et validert barnesnapshot; forseglede holdouts avgjør champion-status.
+                Hvert valg leser gjeldende SOUL.md, filer og minne. Etter hver runde elimineres
+                agenter. Hver overlevende foreslår sin egen endring før hoved-AI-en avgjør og
+                versjonerer SOUL.md, minne og taktikk helt til én sluttmutert vinner står igjen.
               </p>
             </div>
             <div className="my-auto grid gap-3 py-10 sm:grid-cols-3">
               {[
-                { Icon: ShieldCheck, text: "Samme arena, sidebytte, eksplisitte seeds og likt budsjett.", title: "Kontrollerte forsøk" },
+                { Icon: ShieldCheck, text: "Samme arena, sidebytte og eksplisitte seeds. Operativ throttling påvirker aldri score.", title: "Kontrollerte forsøk" },
                 { Icon: GitBranch, text: "SOUL.md, filer, minne, modell og foreldre lagres per snapshot.", title: "Slektslinje" },
                 { Icon: Activity, text: "Champion krever positiv holdout-margin og 95 % Wilson-grense over 50 %.", title: "Usikkerhet" },
               ].map(({ Icon, title, text }) => (
@@ -620,34 +768,39 @@ export function EvolutionPanel({
                   <ShieldCheck className="size-4" /> Jobben og agentartefaktene er lagret
                 </div>
                 <h2 className="text-2xl font-semibold tracking-tight">
-                  {result.generations.length} generasjoner analysert
+                  {result.generations.length} evolusjonsrunder fullført · én agent igjen
                 </h2>
                 <p className="mt-2 text-sm text-muted-foreground">
                   {result.totalDuels} ekte modelldueller · {result.lineageCount} nye slektskapskanter · {result.hallOfFameSnapshotIds.length} i hall of fame
                 </p>
               </div>
-              <Badge className="gap-1.5 bg-amber-300/12 text-amber-200">
-                <Trophy /> {bestLibraryAgent === undefined ? result.best.agent.name : `Agent ${bestLibraryAgent.serialNumber}`}
-              </Badge>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge className="gap-1.5 bg-amber-300/12 text-amber-200">
+                  <Trophy /> {bestLibraryAgent === undefined ? result.winner.name : `Agent ${bestLibraryAgent.serialNumber}`}
+                </Badge>
+                <Button onClick={prepareWinnerForNextRun} type="button" variant="outline">
+                  <Dna /> Muter vinneren i nytt løp
+                </Button>
+              </div>
             </div>
 
             <section className="grid gap-3 sm:grid-cols-4">
               <div className="rounded-xl border border-white/8 bg-black/15 p-4">
-                <p className="text-[10px] tracking-[0.12em] text-muted-foreground uppercase">Beste snapshot</p>
-                <p className="mt-2 truncate font-mono text-sm text-cyan-100">{result.best.agent.id}</p>
+                <p className="text-[10px] tracking-[0.12em] text-muted-foreground uppercase">Sluttmutert vinner</p>
+                <p className="mt-2 truncate font-mono text-sm text-cyan-100">{result.winner.id}</p>
               </div>
               <div className="rounded-xl border border-white/8 bg-black/15 p-4">
                 <p className="text-[10px] tracking-[0.12em] text-muted-foreground uppercase">Modell</p>
-                <p className="mt-2 truncate font-mono text-sm">{result.best.agent.modelId}</p>
+                <p className="mt-2 truncate font-mono text-sm">{result.winner.modelId}</p>
               </div>
               <div className="rounded-xl border border-white/8 bg-black/15 p-4">
-                <p className="text-[10px] tracking-[0.12em] text-muted-foreground uppercase">Vinnrate</p>
-                <p className="mt-2 font-mono text-xl">{Math.round(result.best.winRate * 100)} %</p>
+                <p className="text-[10px] tracking-[0.12em] text-muted-foreground uppercase">Holdout-vinnrate</p>
+                <p className="mt-2 font-mono text-xl">{Math.round(result.championDecision.holdoutWinRate * 100)} %</p>
               </div>
               <div className="rounded-xl border border-white/8 bg-black/15 p-4">
-                <p className="text-[10px] tracking-[0.12em] text-muted-foreground uppercase">95 % intervall</p>
+                <p className="text-[10px] tracking-[0.12em] text-muted-foreground uppercase">Holdout 95 % intervall</p>
                 <p className="mt-2 font-mono text-xl">
-                  {Math.round(result.best.winRateInterval.lower * 100)}–{Math.round(result.best.winRateInterval.upper * 100)} %
+                  {Math.round(result.championDecision.holdoutWinRateInterval.lower * 100)}–{Math.round(result.championDecision.holdoutWinRateInterval.upper * 100)} %
                 </p>
               </div>
             </section>
@@ -676,9 +829,9 @@ export function EvolutionPanel({
                   <FileDiff className="size-4 text-cyan-200" />
                   <p className="text-sm font-semibold">Gjeldende SOUL.md</p>
                 </div>
-                <pre className="max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-5 text-muted-foreground">
-                  {result.best.agent.genome.soul}
-                </pre>
+                <div className="max-h-72 overflow-auto text-xs leading-5 text-muted-foreground">
+                  <MessageResponse>{result.winner.genome.soul}</MessageResponse>
+                </div>
               </div>
               <div className="rounded-xl border border-white/8 bg-black/15 p-4">
                 <div className="mb-3 flex items-center gap-2">
@@ -686,13 +839,15 @@ export function EvolutionPanel({
                   <p className="text-sm font-semibold">Gjeldende minne</p>
                 </div>
                 <div className="max-h-72 space-y-2 overflow-auto">
-                  {result.best.agent.memory.items.length === 0 ? (
+                  {result.winner.memory.items.length === 0 ? (
                     <p className="text-xs text-muted-foreground">Ingen minner ble beholdt.</p>
                   ) : (
-                    result.best.agent.memory.items.map((item) => (
+                    result.winner.memory.items.map((item) => (
                       <div className="rounded-lg border border-white/7 p-2 text-xs" key={`${item.sourceMatchId}-${item.content}`}>
                         <Badge variant="outline" className="mb-1 text-[9px]">{item.category}</Badge>
-                        <p className="leading-5 text-muted-foreground">{item.content}</p>
+                        <div className="leading-5 text-muted-foreground">
+                          <MessageResponse>{item.content}</MessageResponse>
+                        </div>
                       </div>
                     ))
                   )}
@@ -703,8 +858,8 @@ export function EvolutionPanel({
             <section className="rounded-xl border border-white/8 bg-black/15 p-4 sm:p-5">
               <div className="mb-5 flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-semibold">Egnethet per generasjon</p>
-                  <p className="mt-1 text-xs text-muted-foreground">Beste kandidat i hver populasjon</p>
+                  <p className="text-sm font-semibold">Egnethet og eliminering per runde</p>
+                  <p className="mt-1 text-xs text-muted-foreground">Aktive → overlevende, med beste målte fitness</p>
                 </div>
                 <Activity className="size-4 text-cyan-200" />
               </div>
@@ -716,12 +871,15 @@ export function EvolutionPanel({
                       : 18 +
                         ((generation.bestFitness - range.min) / (range.max - range.min)) * 82;
                   return (
-                    <div className="grid grid-cols-[28px_1fr_54px] items-center gap-3" key={generation.generation.id}>
+                    <div className="grid grid-cols-[78px_1fr_54px] items-center gap-3" key={generation.generation.id}>
                       <span className="font-mono text-[10px] text-muted-foreground">G{generation.generation.number + 1}</span>
                       <div className="h-2 overflow-hidden rounded-full bg-white/5">
                         <div className="h-full rounded-full bg-gradient-to-r from-cyan-400/55 to-cyan-200" style={{ width: `${width}%` }} />
                       </div>
                       <span className="text-right font-mono text-[10px]">{generation.bestFitness.toFixed(2)}</span>
+                      <span className="col-span-3 text-[9px] text-muted-foreground">
+                        {generation.activePopulationSize} aktive → {generation.survivorCount} muterte overlevende · {generation.eliminatedCount} eliminert
+                      </span>
                     </div>
                   );
                 })}
@@ -744,7 +902,13 @@ export function EvolutionPanel({
                         <span className="truncate font-mono text-[9px] text-foreground">{mutation.childSnapshotId.slice(-8)}</span>
                         <Badge variant="outline" className="ml-auto border-white/8 text-[9px]">{mutation.mutationOperator}</Badge>
                       </div>
-                      <p className="mt-2 text-xs leading-5 text-muted-foreground">{mutation.summary}</p>
+                      <div className="mt-2 text-xs leading-5 text-muted-foreground">
+                        <MessageResponse>{mutation.summary}</MessageResponse>
+                      </div>
+                      <div className="mt-2 border-t border-white/7 pt-2 text-[10px] leading-4 text-muted-foreground">
+                        <span className="font-medium text-violet-100">Agentens egen refleksjon: </span>
+                        <MessageResponse>{mutation.selfReflectionSummary}</MessageResponse>
+                      </div>
                       <p className="mt-2 text-[10px] text-cyan-100">
                         {mutation.changedFiles.join(", ")}
                         {mutation.memoryWriteCount > 0 ? ` · ${mutation.memoryWriteCount} minneskriv` : ""}
@@ -753,6 +917,22 @@ export function EvolutionPanel({
                   ))}
               </div>
             </section>
+
+            <section className="grid gap-3 sm:grid-cols-4">
+              {[
+                [result.usage.providerCalls.toLocaleString("nb-NO"), "faktiske providerforsøk"],
+                [result.usage.inputTokens.toLocaleString("nb-NO"), "input-tokens"],
+                [result.usage.outputTokens.toLocaleString("nb-NO"), "output-tokens"],
+                [String(result.finalPopulationSize), "aktiv sluttpopulasjon"],
+              ].map(([value, label]) => (
+                <div className="rounded-xl border border-white/8 bg-black/15 p-4" key={label}>
+                  <p className="font-mono text-lg text-cyan-100">{value}</p>
+                  <p className="mt-1 text-[10px] text-muted-foreground">{label}</p>
+                </div>
+              ))}
+            </section>
+
+            <AgentHistoryPanel accessToken={accessToken} agentId={result.winner.agentId} />
           </div>
         )}
       </main>

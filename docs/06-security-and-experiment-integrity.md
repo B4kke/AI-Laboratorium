@@ -49,7 +49,7 @@ Mutation flow:
 agent/evolver proposes change
   -> parse
   -> schema/scope validation
-  -> budget validation
+  -> artifact-size validation
   -> policy validation
   -> immutable snapshot
   -> lineage edge
@@ -148,30 +148,11 @@ Provide explicit retention controls later for storage management, but deletion i
 
 ## Resource limits
 
-Every experiment needs budgets:
-
-- max generations
-- max turns
-- max population
-- max provider calls
-- max tokens where measurable
-- max wall-clock runtime
-- max memory size per agent
-- max event/log volume
-
-Stop conditions should be enforced outside the LLM.
+Arena- og artefaktgrenser håndheves utenfor LLM-en: arenaens turer, populasjon 10–100, brukerens valgte utslagsrunder 1–100, bounded agentminne og bounded event-/payloadstørrelse. Evolution har bevisst ingen selvpålagt providerkall-, token-, kostnads- eller veggklokkegrense; brukerens eksplisitte konfigurasjon er stoppbetingelsen. Faktisk providerbruk registreres for observability, ikke som en sperre.
 
 ## Denial-of-wallet / quota safety
 
-Even with free endpoints, treat API usage as finite.
-
-Implement:
-
-- explicit free-only mode
-- per-experiment call/token ceilings
-- global concurrency
-- no silent paid fallback
-- circuit breaker on repeated errors
+Eksterne kall kan fortsatt feile eller bli throttlet selv i free tier. Drift skal derfor beholde eksplisitt free-only mode, kontrollert parallellitet, timeout/retry og ingen stille overgang til betalte modeller. Dette skal ikke omformes til en per-eksperiment kall-/token-/kostnadssperre i Evolution.
 
 ## Human-facing safety boundary
 

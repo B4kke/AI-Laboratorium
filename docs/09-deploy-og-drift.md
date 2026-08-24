@@ -39,7 +39,7 @@ Etter preview-deploy:
 2. Kjør Fangens dilemma først med merkede kontrollbaselines, deretter med to ekte modeller. Bekreft at replikkene i eventloggen er de faktiske providersvarene og at neste modellprompt inneholder forrige motpartsreplikk.
 3. Bekreft med scripted kontroller at replay går til siste hendelse og viser samme fingeravtrykk ved samme seed. Faktiske LLM-kjøringer får alltid unik kamp-ID og kan gi ulikt fingeravtrykk selv med samme seed.
 4. Last ned PDF og kontroller at filen starter med en lesbar rapportside.
-5. Lagre minst to agenter, bekreft «Agent N», SOUL.md, filer og minne etter reload, og kjør minst to generasjoner med ekte modeller. Kontroller nye barnesnapshots, SOUL-diff, minneskriv med match-provenance, lineage, retired-status og holdout-resultat.
+5. Lagre minst ti agenter, bekreft «Agent N», SOUL.md, filer og minne etter reload, og kjør minst to utslagsrunder med ekte modeller. Kontroller agentselvrefleksjon, hoved-AI-avgjørelse, nye immutable snapshots under stabil Agent N-identitet, SOUL-/taktikkdiff, minneskriv med match-provenance, lineage, retired-status, én sluttmutert agent og holdout-resultat.
 6. Kontroller runtime-loggene for `start`, `done`, status og varighet på API-kall.
 7. Bekreft at en for stor JSON-kropp gir `413`, at gjentatte kall gir `429`, og at eksterne modeller gir `401` uten korrekt Bearer-token.
 

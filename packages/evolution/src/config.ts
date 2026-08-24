@@ -40,9 +40,8 @@ export const EvolutionRequestSchema = z
     defaultModel: RemoteModelSelectionSchema,
     generationCount: z.number().int().min(1).max(100),
     holdoutTrials: z.number().int().min(4).max(40).multipleOf(2).default(6),
-    maxProviderCalls: z.number().int().min(100).max(1_000_000).default(100_000),
     mutationModel: RemoteModelSelectionSchema,
-    populationSize: z.number().int().min(2).max(100),
+    populationSize: z.number().int().min(10).max(100),
     seed: z.string().trim().min(1).max(128),
     slotOverrides: z.array(PopulationSlotOverrideSchema).max(100).default([]),
     trialsPerCandidate: z.number().int().min(2).max(20).multipleOf(2),
@@ -71,6 +70,40 @@ export const EvolutionRequestSchema = z
 
 export type EvolutionRequest = z.infer<typeof EvolutionRequestSchema>;
 
+/**
+ * Antall aktive agenter som evalueres i hver valgte evolusjonsrunde.
+ * Planen reduserer alltid populasjonen til én etter siste runde, også når
+ * brukeren velger flere runder enn det finnes agenter å eliminere.
+ */
+export function evolutionPopulationSchedule(
+  populationSize: number,
+  generationCount: number,
+): readonly number[] {
+  const population = Math.max(2, Math.trunc(populationSize));
+  const generations = Math.max(1, Math.trunc(generationCount));
+  const schedule = [population];
+  for (let generation = 0; generation < generations - 1; generation += 1) {
+    const remainingRounds = generations - generation - 1;
+    schedule.push(
+      Math.max(2, 1 + Math.floor(((population - 1) * remainingRounds) / generations)),
+    );
+  }
+  return schedule;
+}
+
+export function survivorCountAfterGeneration(
+  populationSize: number,
+  generationCount: number,
+  generationNumber: number,
+): number {
+  if (generationNumber >= generationCount - 1) return 1;
+  const remainingRounds = generationCount - generationNumber - 1;
+  return Math.max(
+    2,
+    1 + Math.floor(((populationSize - 1) * remainingRounds) / generationCount),
+  );
+}
+
 export function estimateProviderCalls(
   request: Pick<
     EvolutionRequest,
@@ -78,17 +111,27 @@ export function estimateProviderCalls(
   >,
   arenaRounds: number,
 ): number {
+  const schedule = evolutionPopulationSchedule(
+    request.populationSize,
+    request.generationCount,
+  );
   const trainingDecisions =
-    request.generationCount *
-    request.populationSize *
+    schedule.reduce((sum, activeAgents) => sum + activeAgents, 0) *
     request.trialsPerCandidate *
     arenaRounds *
     2;
-  const offspringPerGeneration = Math.max(
-    1,
-    request.populationSize - Math.ceil(request.populationSize * 0.25),
-  );
-  const mutations = Math.max(0, request.generationCount - 1) * offspringPerGeneration;
+  const mutationStages =
+    2 *
+    schedule.reduce(
+      (sum, _activeAgents, generationNumber) =>
+        sum +
+        survivorCountAfterGeneration(
+          request.populationSize,
+          request.generationCount,
+          generationNumber,
+        ),
+      0,
+    );
   const holdoutDecisions = request.holdoutTrials * arenaRounds * 2;
-  return trainingDecisions + mutations + holdoutDecisions;
+  return trainingDecisions + mutationStages + holdoutDecisions;
 }

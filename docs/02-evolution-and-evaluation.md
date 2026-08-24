@@ -83,9 +83,11 @@ population
 
 ### Implementert v1-kontrakt
 
-Den første reelle kjørebanen bruker en databasekø og separat worker. Brukeren velger antall generasjoner (1–100), populasjon (2–100), trials, holdout-trials, parallellitet, standardmodell, separat mutasjonsmodell og eventuelle per-plass-overstyringer. En overstyring kan peke på et lagret agentsnapshot («Agent N») eller en annen modell; providerens API-nøkkel konfigureres én gang per runtime og kopieres aldri inn i agentkonfigurasjonen.
+Den første reelle kjørebanen bruker en databasekø og separat worker. Brukeren velger antall utslagsrunder (1–100), populasjon (10–100), trials, holdout-trials, parallellitet, standardmodell, separat hoved-AI for mutasjon og eventuelle per-plass-overstyringer. En overstyring kan peke på et lagret agentsnapshot («Agent N») eller en annen modell; providerens API-nøkkel konfigureres én gang per runtime og kopieres aldri inn i agentkonfigurasjonen. Populasjonsplanen eliminerer deterministisk til nøyaktig én agent etter siste valgte runde.
 
-Etter hver evalueringsfase sendes bare observerbare handlinger, brukerrettede traces, meldinger, scores, arena og seeds til mutasjonsmodellen. Et strengt skjema avgrenser endringer til virtuelle agentfiler. Godkjente barn får nye immutable genome-, memory-, agent- og lineage-ID-er. Sealed holdout-seeds brukes først etter siste mutasjon og skrives aldri inn i mutasjonsfeedback.
+Etter hver evalueringsfase kjører hver overlevendes egen modell et avgrenset selvrefleksjonssteg fra egen SOUL, eget minne og observerbare kamper. Forslaget sendes deretter til hoved-AI-en sammen med de samme etterprøvbare kampdataene. Hoved-AI-en kan beholde, korrigere eller erstatte forslaget og avgjør det endelige validerte snapshotet for `SOUL.md`, virtuelle filer, minne og taktikk. Den stabile «Agent N»-identiteten beholdes, mens hvert steg får nye immutable snapshot-, genome-, memory- og lineage-ID-er. Sealed holdout-seeds brukes først etter sluttmutasjonen og skrives aldri inn i mutasjonsfeedback.
+
+Evolution har ingen egen providerkall-, token- eller kostnadsgrense. Brukerens valgte antall runder, populasjon og trials bestemmer arbeidet; faktisk bruk måles og vises, men et estimat stopper aldri en jobb.
 
 ## Selection strategies
 

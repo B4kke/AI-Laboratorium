@@ -1,5 +1,5 @@
-import type { AgentSnapshot } from "@ai-lab/domain";
-import type { AgentListItem, EvolutionJob } from "@ai-lab/db";
+import type { AgentSnapshot, LineageEdge } from "@ai-lab/domain";
+import type { AgentListItem, EvolutionFeedItem, EvolutionJob } from "@ai-lab/db";
 import type { EvolutionRequest, StoredEvolutionResult } from "@ai-lab/evolution";
 import type { ModelDescriptor, ProviderHealth, ProviderId } from "@ai-lab/providers";
 
@@ -10,6 +10,8 @@ export type AgentLibraryResponse = {
 
 export type AgentDetailResponse = {
   agent: AgentListItem;
+  history: readonly AgentSnapshot[];
+  lineage: readonly LineageEdge[];
   snapshot: AgentSnapshot;
 };
 
@@ -21,7 +23,12 @@ export type EvolutionEnqueueResponse = {
 };
 
 export type EvolutionStatusResponse = {
+  feed: readonly EvolutionFeedItem[];
   job: EvolutionJob<EvolutionRequest, StoredEvolutionResult>;
+};
+
+export type EvolutionJobsResponse = {
+  jobs: readonly EvolutionJob<EvolutionRequest, StoredEvolutionResult>[];
 };
 
 export type ProviderCatalogEntry = {

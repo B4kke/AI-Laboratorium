@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { EvolutionRequestSchema, estimateProviderCalls } from "./config";
+import {
+  EvolutionRequestSchema,
+  estimateProviderCalls,
+  evolutionPopulationSchedule,
+  survivorCountAfterGeneration,
+} from "./config";
 
 const baseRequest = {
   arenaId: "fangens-dilemma",
@@ -8,7 +13,6 @@ const baseRequest = {
   defaultModel: { modelId: "default-free", providerId: "opencode-zen" as const },
   generationCount: 3,
   holdoutTrials: 6,
-  maxProviderCalls: 100_000,
   mutationModel: { modelId: "mutator-free", providerId: "opencode-zen" as const },
   populationSize: 100,
   seed: "hundre-agenter",
@@ -35,21 +39,28 @@ describe("evolusjonskonfigurasjon", () => {
     expect(() =>
       EvolutionRequestSchema.parse({
         ...baseRequest,
-        populationSize: 3,
+        populationSize: 10,
         slotOverrides: [{ index: 1 }, { index: 1 }],
       }),
     ).toThrow();
     expect(() =>
       EvolutionRequestSchema.parse({
         ...baseRequest,
-        populationSize: 3,
-        slotOverrides: [{ index: 3 }],
+        populationSize: 10,
+        slotOverrides: [{ index: 10 }],
       }),
     ).toThrow();
   });
 
-  it("beregner eksplisitt leverandørbudsjett før kølegging", () => {
-    expect(estimateProviderCalls({ ...baseRequest, populationSize: 4 }, 8)).toBe(486);
+  it("viser et informativt kallestimat uten å gjøre det til et budsjett", () => {
+    expect(estimateProviderCalls({ ...baseRequest, populationSize: 10 }, 8)).toBe(792);
+  });
+
+  it("lager en eliminasjonsplan som ender med én vinner", () => {
+    expect(evolutionPopulationSchedule(10, 3)).toEqual([10, 7, 4]);
+    expect(survivorCountAfterGeneration(10, 3, 0)).toBe(7);
+    expect(survivorCountAfterGeneration(10, 3, 1)).toBe(4);
+    expect(survivorCountAfterGeneration(10, 3, 2)).toBe(1);
   });
 
   it("krever sidebyttede evalueringspar", () => {

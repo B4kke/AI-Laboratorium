@@ -32,8 +32,12 @@ export async function GET(
     if (snapshot === null) throw new ApiNotFoundError(`Agenten ${agentId} finnes ikke`);
     const agent = await repository.getAgentListItem(agentId);
     if (agent === null) throw new ApiNotFoundError(`Agenten ${agentId} finnes ikke`);
+    const history = await repository.listAgentSnapshots(agentId);
+    const lineage = await repository.listLineageForGenomeIds(
+      history.map(({ genome }) => genome.id),
+    );
     return Response.json(
-      { agent, snapshot },
+      { agent, history, lineage, snapshot },
       { headers: { "Cache-Control": "no-store" } },
     );
   });

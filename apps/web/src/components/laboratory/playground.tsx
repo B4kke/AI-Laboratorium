@@ -147,6 +147,7 @@ function buildLiveResult(
     replayFingerprint: "",
     scores: { a: 0, b: 0 },
     seed: first.seed,
+    usage: { inputTokens: 0, outputTokens: 0, providerCalls: 0, totalTokens: 0 },
     winner: "draw",
   };
 }

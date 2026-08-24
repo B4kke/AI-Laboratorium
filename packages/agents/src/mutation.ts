@@ -1,4 +1,5 @@
 import {
+  AgentStrategySchema,
   MemoryCategorySchema,
   MemorySnapshotSchema,
   VirtualAgentFileSchema,
@@ -51,6 +52,7 @@ export const MutationProposalSchema = z
     objectives: z.array(z.string().trim().min(1).max(500)).min(1).max(12),
     riskProfile: z.number().min(0).max(1),
     soul: z.string().trim().min(1).max(16_000),
+    strategy: AgentStrategySchema.optional(),
     summary: z.string().trim().min(1).max(1_000),
   })
   .strict();
@@ -62,6 +64,10 @@ export type MutationEvidence = {
   decisions: readonly {
     actionId: string;
     message: string;
+    memoryWrite?: {
+      category: MemoryItem["category"];
+      content: string;
+    };
     outcome: string;
     rationale: string;
     round: number;
@@ -115,20 +121,18 @@ export function parseMutationProposal(content: string): MutationProposal {
 
 function renderEvidence(evidence: readonly MutationEvidence[]): string {
   return evidence
-    .slice(-12)
     .map(
       ({ arenaTitle, decisions, matchId, opponentName, scoreAgainst, scoreFor, seed }) =>
         [
           `Kamp ${matchId} · ${arenaTitle} · seed ${seed}`,
           `Motstander: ${opponentName}. Resultat: ${scoreFor}–${scoreAgainst}.`,
-          ...decisions.slice(-8).map(
-            ({ actionId, message, outcome, rationale, round }) =>
-              `R${round}: handling=${actionId}; melding=${JSON.stringify(message)}; begrunnelse=${JSON.stringify(rationale)}; utfall=${outcome}`,
+          ...decisions.map(
+            ({ actionId, memoryWrite, message, outcome, rationale, round }) =>
+              `R${round}: handling=${actionId}; melding=${JSON.stringify(message)}; begrunnelse=${JSON.stringify(rationale)}; minnekandidat=${memoryWrite === undefined ? "ingen" : JSON.stringify(memoryWrite)}; utfall=${outcome}`,
           ),
         ].join("\n"),
     )
-    .join("\n\n")
-    .slice(-24_000);
+    .join("\n\n");
 }
 
 export function buildMutationPrompt(input: {
@@ -141,22 +145,28 @@ export function buildMutationPrompt(input: {
   parentGenome: GenomeSnapshot;
   parentMemory: MemorySnapshot;
   secondaryParent?: GenomeSnapshot;
+  selfProposal?: MutationProposal;
 }): { prompt: string; system: string } {
   const memory = input.parentMemory.items
     .map(({ category, content, sourceMatchId }) => `- [${category}] ${content} (${sourceMatchId})`)
-    .join("\n")
-    .slice(-8_000);
+    .join("\n");
   const files = input.parentGenome.files
     .map(({ content, path }) => `--- ${path} ---\n${content}`)
-    .join("\n")
-    .slice(-18_000);
+    .join("\n");
   const secondary =
     input.secondaryParent === undefined
       ? "Ingen sekundær forelder."
       : `Sekundær forelder ${input.secondaryParent.id}:\n${input.secondaryParent.files
           .map(({ content, path }) => `--- ${path} ---\n${content}`)
-          .join("\n")
-          .slice(-12_000)}`;
+          .join("\n")}`;
+  const selfProposal =
+    input.selfProposal === undefined
+      ? "Agenten har ikke levert et eget forslag i dette steget."
+      : [
+          "AGENTENS EGET MUTASJONSFORSLAG (rådgivende, ikke automatisk godkjent):",
+          JSON.stringify(input.selfProposal, null, 2),
+          "Vurder forslaget mot kampdataene. Behold, korriger eller erstatt det før du returnerer den endelige mutasjonen.",
+        ].join("\n");
   return {
     system:
       "Du er en avgrenset evolveringsmodell. Foreslå en ny, testbar agentversjon ut fra eksplisitte kampdata. Du skal ikke skrive kode, be om hemmeligheter eller returnere privat tankerekke. Returner bare ett JSON-objekt som følger skjemaet.",
@@ -167,8 +177,9 @@ export function buildMutationPrompt(input: {
       `Nåværende minne:\n${memory || "Ingen minner."}`,
       secondary,
       `Observerbare kampdata:\n${renderEvidence(input.evidence)}`,
+      selfProposal,
       "Lag en målrettet mutasjon. Behold gode prinsipper, korriger dokumenterte svakheter og unngå å overtilpasse til én seed eller motstander.",
-      "JSON-felt: soul, communicationPolicy, objectives (array), riskProfile (0..1), files (array med bare øvrige filer som skal endres, path/content/mediaType), memoryWrites (array med category/content) og summary. Filer som ikke oppgis, beholdes uendret.",
+      "JSON-felt: soul, communicationPolicy, objectives (array), riskProfile (0..1), strategy (adaptive/cooperative/opportunist/risk_averse/unpredictable), files (array med bare øvrige filer som skal endres, path/content/mediaType), memoryWrites (array med category/content) og summary. Filer som ikke oppgis, beholdes uendret.",
       "memoryWrites.category skal være nøyaktig én av: \"mistake\", \"opponent_model\", \"principle\", \"successful_pattern\", \"world_model\".",
       "files-feltet kan bare inneholde policy.md, memory-policy.md og tools.md. SOUL.md, objectives.md, risk-profile.json og communication-policy.md styres av de egne JSON-feltene. summary skal være en kort brukerrettet forklaring, ikke en tankerekke.",
     ].join("\n\n"),
@@ -188,7 +199,7 @@ export function applyMutationProposal(input: {
   parentMemory: MemorySnapshot;
   proposal: MutationProposal;
   secondaryParent?: GenomeSnapshot;
-  sourceMatchId: EntityId;
+  sourceMatchIds: readonly EntityId[];
 }): AppliedMutation {
   const proposal = MutationProposalSchema.parse(input.proposal);
   const parentIds = [
@@ -234,10 +245,16 @@ export function applyMutationProposal(input: {
     },
   });
   const createdAt = (input.clock ?? (() => new Date()))().toISOString();
+  const sourceMatchIds = [...new Set(input.sourceMatchIds)].slice(-20);
+  const sourceMatchId = sourceMatchIds[0];
+  if (sourceMatchId === undefined) {
+    throw new Error("Mutasjonen mangler observerbar kamp-proveniens");
+  }
   const memoryWrites: MemoryItem[] = proposal.memoryWrites.map((write) => ({
     ...write,
     createdAt,
-    sourceMatchId: input.sourceMatchId,
+    sourceMatchId,
+    sourceMatchIds,
   }));
   const candidates = [...input.parentMemory.items, ...memoryWrites];
   const retained: MemoryItem[] = [];

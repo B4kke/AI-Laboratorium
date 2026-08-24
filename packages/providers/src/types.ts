@@ -44,6 +44,7 @@ export type DecisionRequest = {
   prompt: string;
   round: number;
   seed: string;
+  signal?: AbortSignal;
   soul?: string;
   strategy: AgentStrategy;
 };
@@ -51,6 +52,7 @@ export type DecisionRequest = {
 export type NormalizedUsage = {
   inputTokens?: number;
   outputTokens?: number;
+  requestCount?: number;
   totalTokens?: number;
 };
 
@@ -67,6 +69,7 @@ export type TextGenerationRequest = {
   maxTokens?: number;
   modelId: string;
   prompt: string;
+  signal?: AbortSignal;
   system: string;
   temperature?: number;
 };

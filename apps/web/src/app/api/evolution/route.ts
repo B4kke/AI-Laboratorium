@@ -15,6 +15,22 @@ import {
 
 export const dynamic = "force-dynamic";
 
+export function GET(request: Request) {
+  return handleApiRequest(request, "/api/evolution", async () => {
+    assertRateLimit(request, "evolusjon-liste", {
+      globalLimit: 600,
+      limit: 120,
+      windowMs: 60_000,
+    });
+    assertLaboratoryAccess(request);
+    const repository = await getLaboratoryRepository();
+    return Response.json(
+      { jobs: await repository.listEvolutionJobs(30) },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  });
+}
+
 export function POST(request: Request) {
   return handleApiRequest(request, "/api/evolution", async () => {
     assertRateLimit(request, "evolusjon-kølegging", {
@@ -47,24 +63,13 @@ export function POST(request: Request) {
       }
       providers.add(snapshot.providerId);
     }
+    const incumbent = await repository.getLatestChampionSnapshot();
+    if (incumbent !== null && incumbent.providerId !== "mock") {
+      providers.add(incumbent.providerId);
+    }
     for (const providerId of providers) assertRemoteProviderAccess(request, providerId);
 
     const estimatedCalls = estimateProviderCalls(input, arena.rounds);
-    const configuredServerLimit = Number(process.env.EVOLUTION_MAX_PROVIDER_CALLS ?? 100_000);
-    const serverLimit = Number.isInteger(configuredServerLimit)
-      ? Math.max(100, Math.min(1_000_000, configuredServerLimit))
-      : 100_000;
-    if (estimatedCalls > input.maxProviderCalls) {
-      throw new ApiInputError(
-        `Konfigurasjonen krever anslagsvis ${estimatedCalls} modellkall, over valgt grense ${input.maxProviderCalls}`,
-      );
-    }
-    if (estimatedCalls > serverLimit) {
-      throw new ApiInputError(
-        `Konfigurasjonen krever anslagsvis ${estimatedCalls} modellkall, over servergrensen ${serverLimit}`,
-      );
-    }
-
     const job = await repository.enqueueEvolution(input);
     return Response.json(
       { estimatedProviderCalls: estimatedCalls, job },

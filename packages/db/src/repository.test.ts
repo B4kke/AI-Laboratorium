@@ -1,4 +1,5 @@
 import { createAgentSnapshot, createGenome, createMemorySnapshot } from "@ai-lab/agents";
+import { EventEnvelopeSchema } from "@ai-lab/domain";
 import { newDb } from "pg-mem";
 import type { Pool } from "pg";
 import { describe, expect, it } from "vitest";
@@ -58,6 +59,10 @@ describe("LaboratoryRepository", () => {
       first.genome.soul,
     );
     expect((await repository.getAgentSnapshot(first.agentId))?.id).toBe(second.id);
+    expect((await repository.listAgentSnapshots(first.agentId)).map(({ id }) => id)).toEqual([
+      first.id,
+      second.id,
+    ]);
     expect((await repository.getAgentListItemBySerialNumber(1))?.agentId).toBe(first.agentId);
     expect(await repository.listAgents()).toEqual([
       expect.objectContaining({
@@ -66,6 +71,9 @@ describe("LaboratoryRepository", () => {
         generation: 1,
       }),
     ]);
+    expect(await repository.getLatestChampionSnapshot()).toBeNull();
+    await repository.updateAgentStatus(first.agentId, "champion");
+    expect((await repository.getLatestChampionSnapshot())?.id).toBe(second.id);
 
     await repository.close();
   });
@@ -112,6 +120,81 @@ describe("LaboratoryRepository", () => {
       result: { winner: "riktig" },
       status: "completed",
     });
+
+    await repository.close();
+  });
+
+  it("lagrer idempotente, resumérbare steg", async () => {
+    const { pool, repository } = await repositoryWithPoolFixture();
+    const job = await repository.enqueueEvolution(
+      { generationCount: 3, populationSize: 10 },
+      new Date("2026-08-21T20:00:00.000Z"),
+    );
+    await pool.query(
+      `UPDATE evolution_jobs SET status='running', lease_owner='worker-resume' WHERE id=$1`,
+      [job.id],
+    );
+
+    await repository.saveEvolutionStep(job.id, "mutation-step-1", "mutation", {
+      child: "første",
+    });
+    await repository.saveEvolutionStep(job.id, "mutation-step-1", "mutation", {
+      child: "motstridende",
+    });
+    await expect(
+      repository.getEvolutionStep<{ child: string }>(job.id, "mutation-step-1", "mutation"),
+    ).resolves.toMatchObject({ payload: { child: "første" } });
+    await expect(repository.listEvolutionJobs()).resolves.toEqual([
+      expect.objectContaining({ id: job.id, status: "running" }),
+    ]);
+
+    await repository.close();
+  });
+
+  it("viser faktiske agentreplikker før duellen er ferdiglagret", async () => {
+    const repository = await repositoryFixture();
+    const job = await repository.enqueueEvolution(
+      { generationCount: 2, populationSize: 10 },
+      new Date("2026-08-21T20:00:00.000Z"),
+    );
+    const event = EventEnvelopeSchema.parse({
+      actorId: "agent_live-a",
+      arenaVersion: "1.0.0",
+      id: "event_live-decision",
+      matchId: "match_live-duel",
+      occurredAt: "2026-08-21T20:00:01.000Z",
+      payload: {
+        actorName: "Agent 382",
+        round: 1,
+        trace: {
+          actionId: "cooperate",
+          confidence: 0.8,
+          goal: "Test livefeed",
+          message: "Jeg svarer deg direkte.",
+          observation: "Runde 1",
+          rationale: "SOUL.md prioriterer et konkret svar.",
+        },
+      },
+      schemaVersion: "1.0",
+      seed: "live-seed",
+      sequence: 2,
+      type: "agent.decided",
+    });
+
+    await repository.saveEvolutionFeedEvent(job.id, "evaluation-live", 0, event);
+    await repository.saveEvolutionFeedEvent(job.id, "evaluation-live", 0, event);
+
+    await expect(repository.listEvolutionFeed(job.id)).resolves.toEqual([
+      {
+        actionId: "cooperate",
+        actorName: "Agent 382",
+        generationNumber: 0,
+        matchId: "match_live-duel",
+        message: "Jeg svarer deg direkte.",
+        rationale: "SOUL.md prioriterer et konkret svar.",
+        round: 1,
+      },
+    ]);
 
     await repository.close();
   });

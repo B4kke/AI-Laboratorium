@@ -28,7 +28,7 @@ export async function GET(
     const job = await repository.getEvolutionJob<EvolutionRequest, StoredEvolutionResult>(jobId);
     if (job === null) throw new ApiNotFoundError(`Evolution-jobben ${jobId} finnes ikke`);
     return Response.json(
-      { job },
+      { feed: await repository.listEvolutionFeed(jobId), job },
       { headers: { "Cache-Control": "no-store" } },
     );
   });

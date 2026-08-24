@@ -16,8 +16,9 @@ Prosjektet er en vertikal laboratorieimplementasjon med to eksplisitt adskilte m
 - eksplisitt «kun gratis»-policy med dynamisk modelloppdagelse
 - persistent agentbibliotek med direkte «Agent N»-oppslag som binder modell, immutable snapshot, `SOUL.md`, virtuelle filer og versjonert minne
 - ekte agent-til-agent-dialog: hver replikk vises ordrett og føres inn i neste modellkall sammen med SOUL, minne og filer
-- købasert Evolution med 1–100 generasjoner, 2–100 agenter, sentral providerkonfigurasjon og valgfri modell/lagret agent per plass
-- modellgenerert, validert mutasjon av `SOUL.md`, øvrige agentfiler og minne med provenance, diff, lineage og retirement uten sletting
+- købasert utslagsevolusjon med 1–100 valgte runder, 10–100 agenter, sentral providerkonfigurasjon og valgfri modell/lagret agent per plass
+- totrinns mutasjon der hver overlevende modell først foreslår egen `SOUL.md`/minne/taktikk, før en valgt hoved-AI validerer og avgjør neste immutable snapshot
+- eliminering til nøyaktig én sluttmutert agent, med provenance, diff, lineage og retirement uten sletting
 - gjentatte sidebyttede trials, fitnessvektor, hall of fame, 95 % Wilson-intervall og forseglede holdouts før champion-promotering
 - nedlastbare rapporter som PDF, HTML og JSON, beskyttet av kortlevde serverbevis
 - helseendepunkt, strukturerte runtime-logger, Vercel Analytics og Speed Insights
@@ -92,7 +93,7 @@ pnpm --filter @ai-lab/runner worker
 | `packages/agents` | uforanderlige genomer, mutasjoner, diff og begrenset minne |
 | `packages/db` | PostgreSQL-skjema, immutable agentsnapshots, dueller, events, lineage og Evolution-kø |
 | `packages/evaluation` | Elo, fitness og usikkerhetsintervaller |
-| `packages/evolution` | generasjoner, elitisme, mutasjon og lineage |
+| `packages/evolution` | utslagsrunder, agentselvrefleksjon, hoved-AI-mutasjon og lineage |
 | `packages/reports` | etterprøvbare PDF-, HTML- og JSON-rapporter |
 | `workers/runner` | langlivet køworker for ekte modelldueller, mutasjon og artefaktpersistens |
 
@@ -104,14 +105,14 @@ pnpm --filter @ai-lab/runner worker
 | `/api/providers` | `GET` | serverfiltrert provider- og modellkatalog |
 | `/api/arenas` | `GET` | versjonerte innebygde arenaer |
 | `/api/agents` | `GET`, `POST` | list, slå opp `?serialNumber=382`, eller opprett persistente agenter |
-| `/api/agents/[agentId]` | `GET` | hent nåværende eller navngitt snapshot med SOUL/minne/filer |
+| `/api/agents/[agentId]` | `GET` | hent nåværende/valgt snapshot, komplett versjonshistorikk og lineage med SOUL/minne/filer |
 | `/api/arena/design` | `POST` | lag og valider en arena fra norsk fritekst |
 | `/api/duels` | `POST` | kjør en seedet Quick Duel |
 | `/api/evolution` | `POST` | valider og kølegg et persistent evolusjonsløp |
 | `/api/evolution/[jobId]` | `GET` | les køstatus, fremdrift og ferdig resultat |
 | `/api/reports/duel` | `POST` | eksporter PDF, HTML eller JSON |
 
-Alle skriveendepunkter har inkrementelle bytegrenser, runtime-validering og per-klient/global rategrense. Eksterne Quick Duels har et hardt budsjett på 16 modellbeslutninger per kjøring. Evolution validerer et eksplisitt modellkallbudsjett før kølegging og kjører utenfor HTTP-levetiden. Rapporter krever et serverutstedt resultatbevis.
+Alle skriveendepunkter har inkrementelle bytegrenser, runtime-validering og per-klient/global rategrense mot misbruk. Verken Quick Duel eller Evolution har en selvpålagt providerkall-/token-/kostnadsgrense: brukerens valgte arena, runder og populasjon er stoppbetingelsen, mens kall og tokens måles informativt. Evolution-jobben kjører utenfor HTTP-levetiden. Rapporter krever et serverutstedt resultatbevis.
 
 ## Deploy på Vercel
 

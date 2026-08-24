@@ -42,14 +42,8 @@ export async function POST(request: Request) {
     for (const providerId of new Set(remoteProviders)) {
       assertRemoteProviderAccess(request, providerId);
     }
-    const providerCallBudget = arena.rounds * remoteProviders.length;
-    if (providerCallBudget > 16) {
-      throw new ApiInputError(
-        "Eksterne modeller er begrenset til totalt 16 beslutninger per duell",
-      );
-    }
     assertRateLimit(request, "duell-arbeid", {
-      cost: Math.max(1, providerCallBudget || Math.ceil(arena.rounds / 2)),
+      cost: 1,
       globalLimit: 256,
       limit: 64,
       windowMs: 60_000,

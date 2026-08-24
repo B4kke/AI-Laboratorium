@@ -1,5 +1,6 @@
 export type ProviderErrorCode =
   | "circuit-open"
+  | "cancelled"
   | "invalid-response"
   | "model-not-free"
   | "not-configured"

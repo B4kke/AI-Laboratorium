@@ -52,7 +52,5 @@ services:
         sync: false
       - key: NVIDIA_CONFIRMED_FREE_MODELS
         sync: false
-      - key: EVOLUTION_MAX_PROVIDER_CALLS
-        value: "100000"
       - key: WORKER_CONCURRENCY
         value: "2"

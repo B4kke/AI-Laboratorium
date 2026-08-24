@@ -1,4 +1,4 @@
-export const databaseSchemaVersion = 2;
+export const databaseSchemaVersion = 4;
 
 export const databaseSchemaSql = `
 CREATE TABLE IF NOT EXISTS schema_versions (
@@ -65,6 +65,13 @@ CREATE TABLE IF NOT EXISTS duel_runs (
   completed_at timestamptz NOT NULL
 );
 
+ALTER TABLE duel_runs ADD COLUMN IF NOT EXISTS evolution_job_id text;
+ALTER TABLE duel_runs ADD COLUMN IF NOT EXISTS generation_number integer;
+ALTER TABLE duel_runs ADD COLUMN IF NOT EXISTS evolution_step_id text;
+
+CREATE INDEX IF NOT EXISTS duel_runs_evolution_job_idx
+  ON duel_runs(evolution_job_id, completed_at DESC);
+
 CREATE TABLE IF NOT EXISTS events (
   id text PRIMARY KEY,
   match_id text NOT NULL REFERENCES duel_runs(match_id),
@@ -90,6 +97,42 @@ CREATE TABLE IF NOT EXISTS evolution_jobs (
 
 CREATE INDEX IF NOT EXISTS evolution_jobs_claim_idx
   ON evolution_jobs(status, created_at);
+
+CREATE TABLE IF NOT EXISTS evolution_feed_events (
+  event_id text PRIMARY KEY,
+  job_id text NOT NULL REFERENCES evolution_jobs(id),
+  step_id varchar(200) NOT NULL,
+  generation_number integer NOT NULL CHECK (generation_number >= 0),
+  event jsonb NOT NULL,
+  occurred_at timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS evolution_feed_events_job_time_idx
+  ON evolution_feed_events(job_id, occurred_at DESC, event_id DESC);
+
+CREATE TABLE IF NOT EXISTS evolution_steps (
+  job_id text NOT NULL REFERENCES evolution_jobs(id),
+  step_id varchar(200) NOT NULL,
+  kind varchar(20) NOT NULL CHECK (kind IN ('duel', 'mutation', 'population')),
+  payload jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(job_id, step_id)
+);
+
+CREATE INDEX IF NOT EXISTS evolution_steps_job_kind_idx
+  ON evolution_steps(job_id, kind, created_at);
+
+CREATE TABLE IF NOT EXISTS provider_snapshots (
+  run_id text NOT NULL,
+  snapshot_id text NOT NULL,
+  provider_id varchar(30) NOT NULL,
+  model_id varchar(200) NOT NULL,
+  snapshot jsonb NOT NULL,
+  captured_at timestamptz NOT NULL,
+  PRIMARY KEY(run_id, snapshot_id)
+);
+
+CREATE INDEX IF NOT EXISTS provider_snapshots_run_idx ON provider_snapshots(run_id);
 
 INSERT INTO schema_versions(version) VALUES (${databaseSchemaVersion})
 ON CONFLICT (version) DO NOTHING;

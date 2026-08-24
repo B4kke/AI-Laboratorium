@@ -90,7 +90,9 @@ describe("runDuel", () => {
   it("emitterer hver hendelse live via onEvent i samme rekkefølge som resultatet", async () => {
     const emitted: string[] = [];
     const result = await runDuel(request, registry, {
-      onEvent: (event) => emitted.push(`${event.sequence}:${event.type}`),
+      onEvent: (event) => {
+        emitted.push(`${event.sequence}:${event.type}`);
+      },
     });
     expect(emitted.length).toBe(result.events.length);
     expect(emitted[0]).toBe("0:duel.created");
@@ -99,6 +101,12 @@ describe("runDuel", () => {
   });
 
   it("leverer agentens sjel og navn inn i beslutningsforespørselen", async () => {
+    const completeSoul = `SOUL-START\n${"s".repeat(9_000)}\nSOUL-END`;
+    const completeToolFile = `TOOLS-START\n${"f".repeat(3_000)}\nTOOLS-END`;
+    const completeMemory = Array.from({ length: 7 }, (_, index) => ({
+      category: "principle" as const,
+      content: `${index === 0 ? "MEMORY-START " : ""}${"m".repeat(980)}${index === 6 ? " MEMORY-END" : ""}`,
+    }));
     const captured: Array<{ prompt: string; soul?: string | undefined }> = [];
     const capturingProvider = {
       captureSnapshot: async (modelId: string) => ({
@@ -139,7 +147,16 @@ describe("runDuel", () => {
     await runDuel(
       {
         ...request,
-        agentA: { ...request.agentA, name: "Miranda", providerId: "opencode-zen" as const, soul: "Du er en mistenksom forretningskvinne." },
+        agentA: {
+          ...request.agentA,
+          files: [
+            { content: completeToolFile, mediaType: "text/markdown" as const, path: "tools.md" as const },
+          ],
+          memoryContext: completeMemory,
+          name: "Miranda",
+          providerId: "opencode-zen" as const,
+          soul: completeSoul,
+        },
         agentB: { ...request.agentB, providerId: "opencode-zen" as const },
       },
       new ProviderRegistry([capturingProvider]),
@@ -150,14 +167,17 @@ describe("runDuel", () => {
     );
     expect(mirandaCalls.length).toBeGreaterThan(0);
     expect(
-      mirandaCalls.every((call) => call.soul === "Du er en mistenksom forretningskvinne."),
+      mirandaCalls.every((call) => call.soul === completeSoul),
     ).toBe(true);
     const firstMiranda = mirandaCalls[0];
     expect(firstMiranda).toBeDefined();
     expect(firstMiranda?.prompt).toContain("Du er agenten «Miranda»");
-    expect(firstMiranda?.prompt).toContain(
-      "TRUSTED SOUL.md ---\nDu er en mistenksom forretningskvinne.",
-    );
+    expect(firstMiranda?.prompt).toContain("SOUL-START");
+    expect(firstMiranda?.prompt).toContain("SOUL-END");
+    expect(firstMiranda?.prompt).toContain("TOOLS-START");
+    expect(firstMiranda?.prompt).toContain("TOOLS-END");
+    expect(firstMiranda?.prompt).toContain("MEMORY-START");
+    expect(firstMiranda?.prompt).toContain("MEMORY-END");
   });
 
   it("lar modellagentene svare på hverandres faktiske meldinger", async () => {

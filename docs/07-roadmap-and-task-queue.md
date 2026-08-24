@@ -385,16 +385,16 @@ When GPT Work starts frontend implementation, use these skills deliberately:
 
 Work should take these in order unless fresh evidence invalidates an assumption.
 
-### Implementasjonsbevis per 2026-08-22
+### Implementasjonsbevis per 2026-08-23
 
 Følgende er implementert i kode, men skal fortsatt skilles fra produksjonsverifisering:
 
-- **Agent-snapshot:** PostgreSQL lagrer en stabil «Agent N»-identitet og immutable snapshots som binder provider/modell, `SOUL.md`, øvrige virtuelle filer, bounded memory og foreldre. UI/API kan hente et eksakt agentnummer uavhengig av paginert liste.
+- **Agent-snapshot:** PostgreSQL lagrer en stabil «Agent N»-identitet og immutable snapshots som binder provider/modell, `SOUL.md`, øvrige virtuelle filer, bounded memory og foreldre. UI/API kan hente et eksakt agentnummer og komplett versjonshistorikk/lineage uavhengig av paginert liste.
 - **Quick Duel:** lagrede snapshots løses på serveren; den faktiske siste motpartsreplikken og en immutable samtalehistorikk går inn i neste providerkall, og UI viser providerens faktiske `message` uten fabrikkert fallback.
-- **Evolution v1:** konfigurasjon støtter 1–100 generasjoner, 2–100 agenter, en sentral standardmodell og per-plass-overstyring av lagret agent/modell. Scripted providers avvises som evolusjonskandidater.
-- **Mutasjon:** en eksplisitt remote mutasjonsmodell mottar bare observerbare kampdata og lager et validert forslag for `SOUL.md`, filer og minneskriv. Barn, diff, provider/model-snapshot, memory-provenance og lineage persisteres; tapere merkes retired uten sletting.
+- **Evolution v1:** konfigurasjon støtter 1–100 brukerbestemte utslagsrunder, 10–100 agenter, en sentral standardmodell og per-plass-overstyring av lagret agent/modell. Planen ender alltid med én sluttmutert agent. Scripted providers avvises som evolusjonskandidater, og informativt bruksestimat er ingen kjøresperre.
+- **Mutasjon:** hver overlevende modell lager først et validert selvrefleksjonsforslag for egen `SOUL.md`, filer, minne og taktikk. En eksplisitt remote hoved-AI mottar forslaget og bare observerbare kampdata, og avgjør den endelige validerte versjonen. Nye immutable snapshots, diff, provider/model-snapshots, memory-provenance og lineage persisteres under samme stabile Agent N-identitet; tapere merkes retired uten sletting.
 - **Evaluering:** gjentatte seedede trials i sidebyttede par, fitnessvektor, evaluatorversjon, generasjonsvis hall of fame, Wilson-intervall og forseglede holdout-seeds ligger i resultatproveniensen. Champion-promotering krever positiv margin og nedre 95 %-grense over 50 % mot en historisk incumbent når en finnes.
-- **Runtime:** web er kontrollplan; PostgreSQL-kø og en separat Node-worker kjører lange forsøk og fornyer lease under dueller.
+- **Runtime:** web er kontrollplan; PostgreSQL-kø og en separat Node-worker kjører lange forsøk, fornyer lease under dueller og gjenopptar idempotente duel-/mutasjonssteg etter worker-restart.
 
 Automatiserte tester bruker en fake remote provider og beviser at modellgenerert SOUL/minne påvirker nye snapshots uten å bruke ekstern kvote. En produksjonssmoke med ekte provider-nøkkel, faktisk PostgreSQL og deployet worker må gjennomføres før funksjonen kalles produksjonsklar. Bredere hall-of-fame-sampling, miljøperturbasjon og distribuert provider-rateplanlegging står fortsatt igjen fra den fulle P1/P2-planen.
 

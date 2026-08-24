@@ -178,7 +178,7 @@ describe("modellgenerert mutasjon", () => {
       parentGenome: parent,
       parentMemory: memory,
       proposal,
-      sourceMatchId: "match_mutation-evidence",
+      sourceMatchIds: ["match_mutation-evidence", "match_mutation-evidence-2"],
     });
 
     expect(applied.genome.soul).toBe(proposal.soul);
@@ -189,6 +189,7 @@ describe("modellgenerert mutasjon", () => {
       expect.objectContaining({
         category: "mistake",
         sourceMatchId: "match_mutation-evidence",
+        sourceMatchIds: ["match_mutation-evidence", "match_mutation-evidence-2"],
       }),
     ]);
     expect(applied.memory.parentId).toBe(memory.id);

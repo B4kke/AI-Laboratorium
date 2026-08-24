@@ -312,6 +312,15 @@ export const DuelResultSchema = z
       })
       .strict(),
     seed: SeedSchema,
+    usage: z
+      .object({
+        inputTokens: z.number().int().nonnegative(),
+        outputTokens: z.number().int().nonnegative(),
+        providerCalls: z.number().int().nonnegative(),
+        totalTokens: z.number().int().nonnegative(),
+      })
+      .strict()
+      .default({ inputTokens: 0, outputTokens: 0, providerCalls: 0, totalTokens: 0 }),
     winner: z.enum(["a", "b", "draw"]),
   })
   .strict();
@@ -379,6 +388,7 @@ export const MemoryItemSchema = z
     content: z.string().trim().min(1).max(1000),
     createdAt: IsoDateSchema,
     sourceMatchId: EntityIdSchema,
+    sourceMatchIds: z.array(EntityIdSchema).min(1).max(20).optional(),
   })
   .strict();
 

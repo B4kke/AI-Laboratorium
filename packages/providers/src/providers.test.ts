@@ -58,6 +58,10 @@ describe("providerpolicy", () => {
         system: "Returner JSON",
       }),
     ).resolves.toMatchObject({ content: "{\"ok\":true}" });
+    const generationBody = JSON.parse(
+      String((fetcher.mock.calls.at(-1)?.[1] as RequestInit | undefined)?.body),
+    ) as Record<string, unknown>;
+    expect(generationBody).not.toHaveProperty("max_tokens");
   });
 
   it("krever runtime-bekreftelse før NIM brukes i free-only-modus", async () => {
@@ -341,6 +345,62 @@ describe("beslutningsproveniens", () => {
       request,
     );
     expect(trace.observation).toBe(request.observation);
+  });
+
+  it("ber samme ekte modell reparere ugyldig beslutnings-JSON uten fabrikkert fallback", async () => {
+    let completionCalls = 0;
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (request) => {
+      if (request.toString().endsWith("/models")) {
+        return jsonResponse({ data: [{ id: "repair-free" }] });
+      }
+      completionCalls += 1;
+      return jsonResponse({
+        choices: [
+          {
+            finish_reason: "stop",
+            message: {
+              content:
+                completionCalls === 1
+                  ? "dette er ikke json"
+                  : JSON.stringify({
+                      actionId: "share",
+                      confidence: 0.77,
+                      goal: "Bygg etterprøvbar tillit.",
+                      message: "Jeg deler fordi avtalen kan kontrolleres.",
+                      observation: "modellpåstand",
+                      rationale: "Deling gir et testbart samarbeidssignal.",
+                    }),
+            },
+          },
+        ],
+        model: "repair-free",
+        usage: { completion_tokens: 10, prompt_tokens: 20, total_tokens: 30 },
+      });
+    });
+    const provider = createOpenCodeZenProvider({ apiKey: "test", fetcher });
+    const decision = await provider.generateDecision({
+      actorName: "Agent 382",
+      allowedActions: [
+        { description: "Del", id: "share", label: "Del" },
+        { description: "Behold", id: "hoard", label: "Behold" },
+      ],
+      conversationHistory: [],
+      modelId: "repair-free",
+      observation: "Motorens observasjon",
+      prompt: "Velg én handling.",
+      round: 1,
+      seed: "repair",
+      strategy: "adaptive",
+    });
+
+    expect(completionCalls).toBe(2);
+    expect(decision.trace.message).toContain("Jeg deler");
+    expect(decision.trace.observation).toBe("Motorens observasjon");
+    expect(decision.usage).toMatchObject({ requestCount: 2, totalTokens: 60 });
+    const secondBody = JSON.parse(
+      String((fetcher.mock.calls.at(-1)?.[1] as RequestInit | undefined)?.body),
+    ) as { messages: Array<{ content: string }> };
+    expect(secondBody.messages.at(-1)?.content).toContain("korrigerte JSON-objektet");
   });
 });
 

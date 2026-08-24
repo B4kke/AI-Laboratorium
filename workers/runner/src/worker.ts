@@ -10,6 +10,8 @@ import {
   type LaboratoryRepository,
 } from "@ai-lab/db";
 import {
+  AgentSnapshotSchema,
+  DuelResultSchema,
   MemorySnapshotSchema,
   createDeterministicId,
   type AgentSnapshot,
@@ -18,12 +20,15 @@ import {
   compactEvolutionResult,
   EvolutionRequestSchema,
   runEvolution,
+  EvolutionMutationSchema,
   type EvolutionRequest,
+  type EvolutionMutation,
 } from "@ai-lab/evolution";
 import { createEnvironmentProviderRegistry } from "@ai-lab/providers";
 
 const workerId = `runner-${process.pid}-${crypto.randomUUID()}`;
 let stopping = false;
+let activeRunController: AbortController | null = null;
 
 function databaseUrl(): string {
   const value = process.env.DATABASE_URL?.trim();
@@ -31,6 +36,15 @@ function databaseUrl(): string {
     throw new Error("Evolution-worker krever DATABASE_URL");
   }
   return value;
+}
+
+function codeCommit(): string {
+  const value =
+    process.env.RENDER_GIT_COMMIT?.trim() ||
+    process.env.VERCEL_GIT_COMMIT_SHA?.trim() ||
+    process.env.GIT_COMMIT?.trim() ||
+    "working-tree";
+  return value.slice(0, 64);
 }
 
 function compactHash(value: string): string {
@@ -120,6 +134,7 @@ async function resolvePopulation(
   request: EvolutionRequest,
 ): Promise<AgentSnapshot[]> {
   const overrides = new Map(request.slotOverrides.map((override) => [override.index, override]));
+  const usedAgentIds = new Set<string>();
   const usedSnapshotIds = new Set<string>();
   const population: AgentSnapshot[] = [];
   for (let index = 0; index < request.populationSize; index += 1) {
@@ -141,12 +156,14 @@ async function resolvePopulation(
       providerId: source.providerId as "nvidia-nim" | "opencode-zen",
     };
     const mustClone =
+      usedAgentIds.has(source.agentId) ||
       usedSnapshotIds.has(source.id) ||
       model.modelId !== source.modelId ||
       model.providerId !== source.providerId;
     const snapshot = mustClone
       ? cloneSnapshotForSlot({ index, jobId, model, source })
       : source;
+    usedAgentIds.add(source.agentId);
     usedSnapshotIds.add(source.id);
     population.push(snapshot);
   }
@@ -189,23 +206,71 @@ async function runJob(
   try {
     await assertLease();
     const request = EvolutionRequestSchema.parse(job.input);
-    const population = await resolvePopulation(repository, job.id, request);
+    const storedPopulation = await repository.getEvolutionStep<unknown>(
+      job.id,
+      "initial-population",
+      "population",
+    );
+    const population =
+      storedPopulation === null
+        ? await resolvePopulation(repository, job.id, request)
+        : AgentSnapshotSchema.array().min(10).max(100).parse(storedPopulation.payload);
+    if (storedPopulation === null) {
+      await repository.saveEvolutionStep(
+        job.id,
+        "initial-population",
+        "population",
+        population,
+      );
+    }
+    const storedIncumbent = await repository.getEvolutionStep<unknown>(
+      job.id,
+      "holdout-incumbent",
+      "population",
+    );
+    const incumbent =
+      storedIncumbent === null
+        ? await repository.getLatestChampionSnapshot()
+        : AgentSnapshotSchema.nullable().parse(storedIncumbent.payload);
+    if (storedIncumbent === null) {
+      await repository.saveEvolutionStep(
+        job.id,
+        "holdout-incumbent",
+        "population",
+        incumbent,
+      );
+    }
     for (const snapshot of population) await repository.saveAgentSnapshot(snapshot);
     const registry = createEnvironmentProviderRegistry(process.env, { includeMock: false });
     const configuredConcurrency = Number(process.env.WORKER_CONCURRENCY ?? 2);
     const workerConcurrency = Number.isInteger(configuredConcurrency)
       ? Math.max(1, Math.min(8, configuredConcurrency))
       : 2;
+    const controller = new AbortController();
+    activeRunController = controller;
     const result = await runEvolution({
       arenaId: request.arenaId,
+      codeCommit: codeCommit(),
       concurrency: Math.min(request.concurrency, workerConcurrency),
       generationCount: request.generationCount,
       holdoutTrials: request.holdoutTrials,
-      maxProviderCalls: request.maxProviderCalls,
+      ...(incumbent === null ? {} : { incumbent }),
       mutationModel: request.mutationModel,
-      onDuel: async (duel) => {
+      onDuel: async (duel, context) => {
         await assertLease();
-        await repository.saveDuel(duel);
+        await repository.saveDuel(duel, {
+          evolutionJobId: job.id,
+          evolutionStepId: context.stepId,
+          generationNumber: context.generationNumber,
+        });
+      },
+      onDuelEvent: async (event, context) => {
+        await repository.saveEvolutionFeedEvent(
+          job.id,
+          context.stepId,
+          context.generationNumber,
+          event,
+        );
       },
       onMutation: async (mutation, { runId }) => {
         await assertLease();
@@ -217,19 +282,44 @@ async function runJob(
           throw new Error(`Worker-leasen for ${job.id} gikk tapt under fremdriftslagring`);
         }
       },
+      onProviderSnapshot: async (snapshot, { runId }) => {
+        await assertLease();
+        await repository.saveProviderSnapshot(runId, snapshot);
+      },
       onRetired: async (agent) => {
         await assertLease();
         await repository.updateAgentStatus(agent.agentId, "retired");
       },
       population,
       registry,
+      resumeStore: {
+        loadDuel: async (stepId) => {
+          const step = await repository.getEvolutionStep(job.id, stepId, "duel");
+          return step === null ? null : DuelResultSchema.parse(step.payload);
+        },
+        loadMutation: async (stepId) => {
+          const step = await repository.getEvolutionStep(job.id, stepId, "mutation");
+          return step === null
+            ? null
+            : (EvolutionMutationSchema.parse(step.payload) as EvolutionMutation);
+        },
+        saveDuel: async (stepId, duel) => {
+          await assertLease();
+          await repository.saveEvolutionStep(job.id, stepId, "duel", duel);
+        },
+        saveMutation: async (stepId, mutation) => {
+          await assertLease();
+          await repository.saveEvolutionStep(job.id, stepId, "mutation", mutation);
+        },
+      },
       runNonce: job.id,
       seed: request.seed,
+      signal: controller.signal,
       trialsPerCandidate: request.trialsPerCandidate,
     });
     await assertLease();
     if (result.championDecision.promoted) {
-      await repository.updateAgentStatus(result.best.agent.agentId, "champion");
+      await repository.updateAgentStatus(result.winner.agentId, "champion");
     }
     if (!(await repository.completeEvolution(job.id, workerId, compactEvolutionResult(result)))) {
       throw new Error(`Worker-leasen for ${job.id} gikk tapt før fullføring`);
@@ -247,7 +337,10 @@ async function runJob(
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Ukjent Evolution-feil";
-    const failureRecorded = await repository.failEvolution(job.id, workerId, message);
+    const interrupted = stopping || activeRunController?.signal.aborted === true;
+    const failureRecorded = interrupted
+      ? await repository.releaseEvolution(job.id, workerId)
+      : await repository.failEvolution(job.id, workerId, message);
     console.error(
       JSON.stringify({
         durationMs: Date.now() - startedAt,
@@ -255,12 +348,13 @@ async function runJob(
         failureRecorded,
         jobId: job.id,
         level: "error",
-        message: "evolution-job-failed",
+        message: interrupted ? "evolution-job-released" : "evolution-job-failed",
         workerId,
       }),
     );
   } finally {
     clearInterval(heartbeatTimer);
+    activeRunController = null;
   }
 }
 
@@ -272,6 +366,7 @@ async function main(): Promise<void> {
   const repository = await createLaboratoryRepository(databaseUrl()).then(ensureRepositorySchema);
   const stop = () => {
     stopping = true;
+    activeRunController?.abort(new Error("Worker stopper; jobben fortsetter fra lagrede steg"));
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);

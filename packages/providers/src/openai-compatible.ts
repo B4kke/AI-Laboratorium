@@ -42,7 +42,7 @@ const ChatCompletionSchema = z
             finish_reason: z.string().max(100).nullable().optional(),
             message: z
               .object({
-                content: z.string().max(50_000),
+                content: z.string().max(200_000),
               })
               .passthrough(),
           })
@@ -77,7 +77,11 @@ export type OpenAICompatibleProviderOptions = {
 };
 
 const modelResponseLimitBytes = 512_000;
-const completionResponseLimitBytes = 128_000;
+const completionResponseLimitBytes = 512_000;
+
+function signalIsAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
 
 async function readWithDeadline(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -279,13 +283,19 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 
   async #chatCompletion(init: {
-    defaultMaxTokens: number;
+    defaultMaxTokens?: number | undefined;
     messages: ReadonlyArray<{ content: string; role: string }>;
     modelId: string;
+    onAttempt?: (() => void) | undefined;
     requestedMaxTokens?: number | undefined;
+    signal?: AbortSignal | undefined;
     temperature?: number | undefined;
   }): Promise<z.infer<typeof ChatCompletionSchema>> {
-    let maxTokens = Math.max(64, Math.min(8_192, init.requestedMaxTokens ?? init.defaultMaxTokens));
+    const initialMaxTokens = init.requestedMaxTokens ?? init.defaultMaxTokens;
+    let maxTokens =
+      initialMaxTokens === undefined
+        ? undefined
+        : Math.max(64, Math.min(8_192, initialMaxTokens));
     for (;;) {
       let response: z.infer<typeof ChatCompletionSchema>;
       try {
@@ -293,7 +303,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
           "/chat/completions",
           {
             body: JSON.stringify({
-              max_tokens: maxTokens,
+              ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
               messages: init.messages.map(({ content, role }) => ({ content, role })),
               model: init.modelId,
               stream: false,
@@ -304,19 +314,22 @@ export class OpenAICompatibleProvider implements ModelProvider {
           },
           ChatCompletionSchema,
           completionResponseLimitBytes,
+          true,
+          init.onAttempt,
+          init.signal,
         );
       } catch (error) {
         const tokenLimitRejection =
           error instanceof ProviderError &&
           error.status === 400 &&
           /max[_ ]?tokens|maximum context|context length/i.test(error.message);
-        if (!tokenLimitRejection || maxTokens <= 512) throw error;
+        if (!tokenLimitRejection || maxTokens === undefined || maxTokens <= 512) throw error;
         maxTokens = Math.floor(maxTokens / 2);
         continue;
       }
       const finishReason = response.choices[0]?.finish_reason;
-      if (finishReason !== "length" || maxTokens >= 8_192) return response;
-      maxTokens = Math.min(8_192, maxTokens * 2);
+      if (finishReason !== "length" || maxTokens === 8_192) return response;
+      maxTokens = maxTokens === undefined ? 2_000 : Math.min(8_192, maxTokens * 2);
     }
   }
 
@@ -328,47 +341,69 @@ export class OpenAICompatibleProvider implements ModelProvider {
     assertFreePolicy(model, this.#policy.freeOnly);
 
     const startedAt = performance.now();
-    const body = await this.#chatCompletion({
-      defaultMaxTokens: 3_000,
-      messages: [
-        {
-          content:
-            "Du er en arena-agent som spiller i egen karakter. Svar alltid som agenten selv, i førsteperson: la meldingen og begrunnelsen gjenspeile agentens navn, sjel, strategi og situasjonen i observasjonen. Vær konkret og personlig, aldri generisk. Meldingen skal være maks to setninger. Returner likevel BARE ett JSON-objekt med feltene actionId, message, observation, goal, rationale og confidence — ingen tankerekke, forklaring eller tekst utenfor objektet.",
-          role: "system",
+    const system =
+      "Du er en arena-agent som spiller i egen karakter. Svar alltid som agenten selv, i førsteperson. Reager konkret på motpartens faktiske melding og la ordvalg, mål og handling følge din SOUL.md, ditt minne og situasjonen. Vær konkret og personlig, aldri generisk, og begrens meldingen til maks to setninger. Returner BARE ett JSON-objekt med feltene actionId, message, observation, goal, rationale, confidence og valgfritt memoryWrite {category, content}. Returner aldri privat tankerekke eller tekst utenfor objektet.";
+    let repairMessages: Array<{ content: string; role: "assistant" | "user" }> = [];
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let totalTokens = 0;
+    let requestCount = 0;
+    let lastError: unknown;
+    for (let semanticAttempt = 0; semanticAttempt < 3; semanticAttempt += 1) {
+      const body = await this.#chatCompletion({
+        defaultMaxTokens: 3_000,
+        messages: [
+          { content: system, role: "system" },
+          { content: request.prompt, role: "user" },
+          ...repairMessages,
+        ],
+        modelId: request.modelId,
+        onAttempt: () => {
+          requestCount += 1;
         },
-        { content: request.prompt, role: "user" },
-      ],
-      modelId: request.modelId,
-      temperature: 0.2,
-    });
-    this.#assertModelIdentity(body.model, request.modelId);
-    const firstChoice = body.choices[0];
-    if (firstChoice === undefined) {
-      throw new ProviderError("invalid-response", "Provideren returnerte ingen valg");
+        signal: request.signal,
+        temperature: semanticAttempt === 0 ? 0.2 : 0,
+      });
+      this.#assertModelIdentity(body.model, request.modelId);
+      const firstChoice = body.choices[0];
+      if (firstChoice === undefined) {
+        throw new ProviderError("invalid-response", "Provideren returnerte ingen valg");
+      }
+      if (firstChoice.finish_reason === "length") {
+        throw new ProviderError(
+          "invalid-response",
+          "Provideren avkortet beslutningen midt i svaret selv ved maksimal token-budsjett",
+        );
+      }
+      inputTokens += body.usage?.prompt_tokens ?? 0;
+      outputTokens += body.usage?.completion_tokens ?? 0;
+      totalTokens += body.usage?.total_tokens ?? 0;
+      try {
+        return {
+          finishReason: firstChoice.finish_reason ?? "unknown",
+          latencyMs: performance.now() - startedAt,
+          modelId: request.modelId,
+          providerId: this.id,
+          trace: parseDecisionTrace(firstChoice.message.content, request),
+          usage: { inputTokens, outputTokens, requestCount, totalTokens },
+        };
+      } catch (error) {
+        lastError = error;
+        repairMessages = [
+          { content: firstChoice.message.content.slice(0, 4_000), role: "assistant" },
+          {
+            content:
+              "Svaret var ikke gyldig etter det avtalte JSON-skjemaet eller valgte en ulovlig handling. Returner hele det korrigerte JSON-objektet, med én lovlig actionId, og ingenting annet.",
+            role: "user",
+          },
+        ];
+      }
     }
-    if (firstChoice.finish_reason === "length") {
-      throw new ProviderError(
-        "invalid-response",
-        "Provideren avkortet beslutningen midt i svaret selv ved maksimal token-budsjett",
-      );
-    }
-
-    return {
-      finishReason: firstChoice.finish_reason ?? "unknown",
-      latencyMs: performance.now() - startedAt,
-      modelId: request.modelId,
-      providerId: this.id,
-      trace: parseDecisionTrace(firstChoice.message.content, request),
-      usage: {
-        ...(body.usage?.prompt_tokens === undefined
-          ? {}
-          : { inputTokens: body.usage.prompt_tokens }),
-        ...(body.usage?.completion_tokens === undefined
-          ? {}
-          : { outputTokens: body.usage.completion_tokens }),
-        ...(body.usage?.total_tokens === undefined ? {} : { totalTokens: body.usage.total_tokens }),
-      },
-    };
+    throw new ProviderError(
+      "invalid-response",
+      "Modellen returnerte ikke en gyldig beslutning etter tre reparasjonsforsøk",
+      { cause: lastError },
+    );
   }
 
   async generateText(request: TextGenerationRequest): Promise<TextGenerationResult> {
@@ -378,14 +413,18 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const model = await this.#findModel(request.modelId);
     assertFreePolicy(model, this.#policy.freeOnly);
     const startedAt = performance.now();
+    let requestCount = 0;
     const body = await this.#chatCompletion({
-      defaultMaxTokens: 2_000,
       messages: [
         { content: request.system, role: "system" },
         { content: request.prompt, role: "user" },
       ],
       modelId: request.modelId,
+      onAttempt: () => {
+        requestCount += 1;
+      },
       requestedMaxTokens: request.maxTokens,
+      signal: request.signal,
       temperature: request.temperature ?? 0.15,
     });
     this.#assertModelIdentity(body.model, request.modelId);
@@ -406,6 +445,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         ...(body.usage?.completion_tokens === undefined
           ? {}
           : { outputTokens: body.usage.completion_tokens }),
+        requestCount,
         ...(body.usage?.total_tokens === undefined ? {} : { totalTokens: body.usage.total_tokens }),
       },
     };
@@ -464,6 +504,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
     schema: z.ZodType<T>,
     maxResponseBytes: number,
     requireKey = true,
+    onAttempt?: () => void,
+    externalSignal?: AbortSignal,
   ): Promise<T> {
     if (this.#circuitOpenUntil > Date.now()) {
       throw new ProviderError("circuit-open", "Providerkretsen er midlertidig åpen", {
@@ -477,6 +519,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
     let lastError: unknown;
     const deadline = Date.now() + this.#requestTimeoutMs;
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (signalIsAborted(externalSignal)) {
+        throw new ProviderError("cancelled", "Providerforespørselen ble avbrutt", {
+          cause: externalSignal?.reason,
+        });
+      }
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) {
         lastError = new ProviderError("timeout", "Providerforespørselen fikk tidsavbrudd", {
@@ -487,6 +534,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), remainingMs);
       try {
+        onAttempt?.();
         const response = await this.#fetcher(`${this.#baseUrl}${path}`, {
           ...init,
           headers: {
@@ -494,7 +542,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
             ...init.headers,
           },
           redirect: "error",
-          signal: controller.signal,
+          signal:
+            externalSignal === undefined
+              ? controller.signal
+              : AbortSignal.any([controller.signal, externalSignal]),
         });
         if (response.url.length > 0 && new URL(response.url).origin !== this.#origin) {
           await response.body?.cancel("Uventet provider-origin");
@@ -527,6 +578,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
           { retryable: true, status: response.status },
         );
       } catch (error) {
+        if (signalIsAborted(externalSignal)) {
+          throw new ProviderError("cancelled", "Providerforespørselen ble avbrutt", {
+            cause: externalSignal?.reason ?? error,
+          });
+        }
         if (error instanceof ProviderError && !error.retryable) {
           this.#recordFailure();
           throw error;
