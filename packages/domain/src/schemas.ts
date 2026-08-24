@@ -289,6 +289,17 @@ export const EventEnvelopeSchema = z
 
 export type EventEnvelope = z.infer<typeof EventEnvelopeSchema>;
 
+export const DuelUsageSchema = z
+  .object({
+    inputTokens: z.number().int().nonnegative().optional(),
+    outputTokens: z.number().int().nonnegative().optional(),
+    providerCalls: z.number().int().nonnegative().optional(),
+    totalTokens: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+export type DuelUsage = z.infer<typeof DuelUsageSchema>;
+
 export const DuelResultSchema = z
   .object({
     agentArtifacts: z
@@ -312,15 +323,7 @@ export const DuelResultSchema = z
       })
       .strict(),
     seed: SeedSchema,
-    usage: z
-      .object({
-        inputTokens: z.number().int().nonnegative(),
-        outputTokens: z.number().int().nonnegative(),
-        providerCalls: z.number().int().nonnegative(),
-        totalTokens: z.number().int().nonnegative(),
-      })
-      .strict()
-      .default({ inputTokens: 0, outputTokens: 0, providerCalls: 0, totalTokens: 0 }),
+    usage: DuelUsageSchema,
     winner: z.enum(["a", "b", "draw"]),
   })
   .strict();

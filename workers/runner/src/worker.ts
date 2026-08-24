@@ -363,7 +363,7 @@ async function pause(milliseconds: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const repository = await createLaboratoryRepository(databaseUrl()).then(ensureRepositorySchema);
+  const repository = await ensureRepositorySchema(await createLaboratoryRepository(databaseUrl()));
   const stop = () => {
     stopping = true;
     activeRunController?.abort(new Error("Worker stopper; jobben fortsetter fra lagrede steg"));

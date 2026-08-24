@@ -42,7 +42,7 @@ const ChatCompletionSchema = z
             finish_reason: z.string().max(100).nullable().optional(),
             message: z
               .object({
-                content: z.string().max(200_000),
+                content: z.string().max(50_000),
               })
               .passthrough(),
           })
@@ -77,11 +77,7 @@ export type OpenAICompatibleProviderOptions = {
 };
 
 const modelResponseLimitBytes = 512_000;
-const completionResponseLimitBytes = 512_000;
-
-function signalIsAborted(signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true;
-}
+const completionResponseLimitBytes = 128_000;
 
 async function readWithDeadline(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -286,7 +282,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     defaultMaxTokens?: number | undefined;
     messages: ReadonlyArray<{ content: string; role: string }>;
     modelId: string;
-    onAttempt?: (() => void) | undefined;
+    onAttempt?: () => void;
     requestedMaxTokens?: number | undefined;
     signal?: AbortSignal | undefined;
     temperature?: number | undefined;
@@ -297,6 +293,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         ? undefined
         : Math.max(64, Math.min(8_192, initialMaxTokens));
     for (;;) {
+      init.onAttempt?.();
       let response: z.infer<typeof ChatCompletionSchema>;
       try {
         response = await this.#requestJson(
@@ -314,8 +311,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
           },
           ChatCompletionSchema,
           completionResponseLimitBytes,
-          true,
-          init.onAttempt,
+          false,
           init.signal,
         );
       } catch (error) {
@@ -323,13 +319,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
           error instanceof ProviderError &&
           error.status === 400 &&
           /max[_ ]?tokens|maximum context|context length/i.test(error.message);
-        if (!tokenLimitRejection || maxTokens === undefined || maxTokens <= 512) throw error;
-        maxTokens = Math.floor(maxTokens / 2);
+        if (!tokenLimitRejection || (maxTokens ?? 0) <= 512) throw error;
+        maxTokens = Math.floor((maxTokens ?? 1024) / 2);
         continue;
       }
       const finishReason = response.choices[0]?.finish_reason;
-      if (finishReason !== "length" || maxTokens === 8_192) return response;
-      maxTokens = maxTokens === undefined ? 2_000 : Math.min(8_192, maxTokens * 2);
+      if (finishReason !== "length" || (maxTokens ?? 0) >= 8_192) return response;
+      maxTokens = Math.min(8_192, (maxTokens ?? 1024) * 2);
     }
   }
 
@@ -399,9 +395,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
         ];
       }
     }
-    throw new ProviderError(
-      "invalid-response",
-      "Modellen returnerte ikke en gyldig beslutning etter tre reparasjonsforsøk",
+    throw new Error(
+      "Kunne ikke generere gyldig beslutning etter tre forsøk",
       { cause: lastError },
     );
   }
@@ -413,18 +408,14 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const model = await this.#findModel(request.modelId);
     assertFreePolicy(model, this.#policy.freeOnly);
     const startedAt = performance.now();
-    let requestCount = 0;
     const body = await this.#chatCompletion({
       messages: [
         { content: request.system, role: "system" },
         { content: request.prompt, role: "user" },
       ],
       modelId: request.modelId,
-      onAttempt: () => {
-        requestCount += 1;
-      },
       requestedMaxTokens: request.maxTokens,
-      signal: request.signal,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
       temperature: request.temperature ?? 0.15,
     });
     this.#assertModelIdentity(body.model, request.modelId);
@@ -445,7 +436,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         ...(body.usage?.completion_tokens === undefined
           ? {}
           : { outputTokens: body.usage.completion_tokens }),
-        requestCount,
+        requestCount: 1,
         ...(body.usage?.total_tokens === undefined ? {} : { totalTokens: body.usage.total_tokens }),
       },
     };
@@ -504,7 +495,6 @@ export class OpenAICompatibleProvider implements ModelProvider {
     schema: z.ZodType<T>,
     maxResponseBytes: number,
     requireKey = true,
-    onAttempt?: () => void,
     externalSignal?: AbortSignal,
   ): Promise<T> {
     if (this.#circuitOpenUntil > Date.now()) {
@@ -519,11 +509,6 @@ export class OpenAICompatibleProvider implements ModelProvider {
     let lastError: unknown;
     const deadline = Date.now() + this.#requestTimeoutMs;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (signalIsAborted(externalSignal)) {
-        throw new ProviderError("cancelled", "Providerforespørselen ble avbrutt", {
-          cause: externalSignal?.reason,
-        });
-      }
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) {
         lastError = new ProviderError("timeout", "Providerforespørselen fikk tidsavbrudd", {
@@ -533,8 +518,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
       }
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), remainingMs);
+      const signal =
+        externalSignal === undefined
+          ? controller.signal
+          : AbortSignal.any([controller.signal, externalSignal]);
       try {
-        onAttempt?.();
         const response = await this.#fetcher(`${this.#baseUrl}${path}`, {
           ...init,
           headers: {
@@ -542,10 +530,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
             ...init.headers,
           },
           redirect: "error",
-          signal:
-            externalSignal === undefined
-              ? controller.signal
-              : AbortSignal.any([controller.signal, externalSignal]),
+          signal,
         });
         if (response.url.length > 0 && new URL(response.url).origin !== this.#origin) {
           await response.body?.cancel("Uventet provider-origin");
@@ -578,11 +563,6 @@ export class OpenAICompatibleProvider implements ModelProvider {
           { retryable: true, status: response.status },
         );
       } catch (error) {
-        if (signalIsAborted(externalSignal)) {
-          throw new ProviderError("cancelled", "Providerforespørselen ble avbrutt", {
-            cause: externalSignal?.reason ?? error,
-          });
-        }
         if (error instanceof ProviderError && !error.retryable) {
           this.#recordFailure();
           throw error;

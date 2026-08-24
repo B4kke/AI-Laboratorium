@@ -253,8 +253,8 @@ export function applyMutationProposal(input: {
   const memoryWrites: MemoryItem[] = proposal.memoryWrites.map((write) => ({
     ...write,
     createdAt,
-    sourceMatchId,
-    sourceMatchIds,
+    sourceMatchId: input.sourceMatchIds[0] ?? "",
+    sourceMatchIds: [...input.sourceMatchIds],
   }));
   const candidates = [...input.parentMemory.items, ...memoryWrites];
   const retained: MemoryItem[] = [];

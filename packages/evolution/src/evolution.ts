@@ -624,17 +624,29 @@ function addUsage(target: EvolutionUsage, usage: NormalizedUsage, defaultCalls =
 }
 
 function combineUsage(...usages: readonly NormalizedUsage[]): NormalizedUsage {
-  return usages.reduce<NormalizedUsage>(
-    (combined, usage) => ({
-      inputTokens: (combined.inputTokens ?? 0) + (usage.inputTokens ?? 0),
-      outputTokens: (combined.outputTokens ?? 0) + (usage.outputTokens ?? 0),
-      requestCount: (combined.requestCount ?? 0) + (usage.requestCount ?? 1),
-      totalTokens:
+  const result = usages.reduce(
+    (combined, usage) => {
+      const inputTokens = (combined.inputTokens ?? 0) + (usage.inputTokens ?? 0);
+      const outputTokens = (combined.outputTokens ?? 0) + (usage.outputTokens ?? 0);
+      const requestCount = (combined.requestCount ?? 0) + (usage.requestCount ?? 1);
+      const totalTokens =
         (combined.totalTokens ?? 0) +
-        (usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)),
-    }),
-    {},
+        (usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0));
+      const result: NormalizedUsage = {};
+      if (inputTokens !== 0) result.inputTokens = inputTokens;
+      if (outputTokens !== 0) result.outputTokens = outputTokens;
+      if (requestCount !== 0) result.requestCount = requestCount;
+      if (combined.totalTokens !== undefined || usage.totalTokens !== undefined) {
+        const totalTokens =
+          (combined.totalTokens ?? 0) +
+          (usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0));
+        if (totalTokens !== 0) result.totalTokens = totalTokens;
+      }
+      return result;
+    },
+    {} as NormalizedUsage,
   );
+  return result;
 }
 
 async function generateMutationProposal(input: {
@@ -996,12 +1008,12 @@ export async function runEvolution(input: EvolutionInput): Promise<EvolutionResu
   const executionInput: EvolutionInput = {
     ...input,
     onDuel: async (duel, context) => {
-      addUsage(usage, {
-        inputTokens: duel.usage.inputTokens,
-        outputTokens: duel.usage.outputTokens,
-        requestCount: duel.usage.providerCalls,
-        totalTokens: duel.usage.totalTokens,
-      }, 0);
+      const duelUsage: NormalizedUsage = {};
+      if (duel.usage.inputTokens !== undefined) duelUsage.inputTokens = duel.usage.inputTokens;
+      if (duel.usage.outputTokens !== undefined) duelUsage.outputTokens = duel.usage.outputTokens;
+      if (duel.usage.providerCalls !== undefined) duelUsage.requestCount = duel.usage.providerCalls;
+      if (duel.usage.totalTokens !== undefined) duelUsage.totalTokens = duel.usage.totalTokens;
+      addUsage(usage, duelUsage, 0);
       await input.onDuel?.(duel, context);
     },
   };
