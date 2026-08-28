@@ -1,3 +1,4 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -61,6 +62,34 @@ describe("evolusjonskonfigurasjon", () => {
     expect(survivorCountAfterGeneration(10, 3, 0)).toBe(7);
     expect(survivorCountAfterGeneration(10, 3, 1)).toBe(4);
     expect(survivorCountAfterGeneration(10, 3, 2)).toBe(1);
+  });
+
+  it("bevarer eliminasjonsinvariantene for alle tillatte størrelser", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ max: 100, min: 10 }),
+        fc.integer({ max: 100, min: 1 }),
+        (populationSize, generationCount) => {
+          const schedule = evolutionPopulationSchedule(populationSize, generationCount);
+          expect(schedule).toHaveLength(generationCount);
+          expect(schedule[0]).toBe(populationSize);
+          for (const [index, activeAgents] of schedule.entries()) {
+            expect(activeAgents).toBeGreaterThanOrEqual(2);
+            expect(activeAgents).toBeLessThanOrEqual(populationSize);
+            if (index > 0) expect(activeAgents).toBeLessThanOrEqual(schedule[index - 1] ?? 0);
+          }
+
+          const survivors = Array.from({ length: generationCount }, (_, generationNumber) =>
+            survivorCountAfterGeneration(populationSize, generationCount, generationNumber),
+          );
+          expect(survivors.at(-1)).toBe(1);
+          for (let index = 1; index < survivors.length; index += 1) {
+            expect(survivors[index]).toBeLessThanOrEqual(survivors[index - 1] ?? 0);
+          }
+        },
+      ),
+      { numRuns: 500 },
+    );
   });
 
   it("krever sidebyttede evalueringspar", () => {

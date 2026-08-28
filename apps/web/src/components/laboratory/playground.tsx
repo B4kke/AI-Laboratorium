@@ -1,15 +1,31 @@
 "use client";
 
-import type {
-  AgentConfiguration,
-  AgentSnapshot,
-  ArenaSpec,
-  DuelResult,
-  EventEnvelope,
+import {
+  DuelResultSchema,
+  EventEnvelopeSchema,
+  type AgentConfiguration,
+  type AgentSnapshot,
+  type ArenaSpec,
+  type DuelResult,
+  type EventEnvelope,
 } from "@ai-lab/domain";
-import { AlertTriangle, Beaker, CodeXml, Plus, ShieldCheck, Sparkles, Swords, X } from "lucide-react";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { EventSourceParserStream } from "eventsource-parser/stream";
+import {
+  AlertTriangle,
+  Beaker,
+  CodeXml,
+  Plus,
+  ShieldCheck,
+  Sparkles,
+  Swords,
+  X,
+} from "lucide-react";
 import dynamic from "next/dynamic";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
 
 import { AgentConfig } from "@/components/laboratory/agent-config";
 import { DuelStage } from "@/components/laboratory/duel-stage";
@@ -97,10 +113,27 @@ type ArenaDraftResponse = {
   spec: ArenaSpec;
 };
 
-type DuelStreamMessage =
-  | { event: EventEnvelope; kind: "event" }
-  | { kind: "result"; reportToken: string; result: DuelResult }
-  | { kind: "error"; message: string };
+const DuelStreamMessageSchema = z.discriminatedUnion("kind", [
+  z.object({ event: EventEnvelopeSchema, kind: z.literal("event") }).strict(),
+  z
+    .object({
+      kind: z.literal("result"),
+      reportToken: z.string().min(1).max(4_096),
+      result: DuelResultSchema,
+    })
+    .strict(),
+  z.object({ kind: z.literal("error"), message: z.string().min(1).max(1_000) }).strict(),
+]);
+
+const ArenaDesignerFormSchema = z.object({
+  idea: z
+    .string()
+    .trim()
+    .min(12, "Beskriv arenaen med minst 12 tegn")
+    .max(2_000, "Beskrivelsen kan være maks 2 000 tegn"),
+});
+
+type ArenaDesignerForm = z.infer<typeof ArenaDesignerFormSchema>;
 
 type PlaygroundProps = { initialArenas: readonly ArenaSpec[] };
 
@@ -152,20 +185,26 @@ function buildLiveResult(
   };
 }
 
+function parseDuelStreamMessage(data: string) {
+  try {
+    return DuelStreamMessageSchema.parse(JSON.parse(data));
+  } catch (error) {
+    throw new Error("Duellstrømmen inneholdt ugyldige data", { cause: error });
+  }
+}
+
 export function Playground({ initialArenas }: PlaygroundProps) {
   const [mode, setMode] = useState<"duel" | "evolution">("duel");
   const [arenas, setArenas] = useState<readonly ArenaSpec[]>(initialArenas);
   const [arenaId, setArenaId] = useState(initialArenas[0]?.id ?? "fangens-dilemma");
   const [agentA, setAgentA] = useState<AgentConfiguration>(initialAgentA);
   const [agentB, setAgentB] = useState<AgentConfiguration>(initialAgentB);
-  const [providers, setProviders] = useState<readonly ProviderCatalogEntry[]>(initialProviders);
   const [seed, setSeed] = useState("norsk-duell-42");
   const [result, setResult] = useState<DuelResult | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<EventEnvelope | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [designerOpen, setDesignerOpen] = useState(false);
-  const [designerIdea, setDesignerIdea] = useState("");
   const [designerMode, setDesignerMode] = useState<"local" | "model">("local");
   const [designing, setDesigning] = useState(false);
   const [designNotice, setDesignNotice] = useState<string | null>(null);
@@ -173,66 +212,43 @@ export function Playground({ initialArenas }: PlaygroundProps) {
   const [runSerial, setRunSerial] = useState(0);
   const [providerAccessToken, setProviderAccessToken] = useState("");
   const [connectedAccessToken, setConnectedAccessToken] = useState("");
+  const [connectionRevision, setConnectionRevision] = useState(0);
+  const [connecting, setConnecting] = useState(false);
   const [reportToken, setReportToken] = useState<string | null>(null);
   const [liveResult, setLiveResult] = useState<DuelResult | null>(null);
-  const [savedAgents, setSavedAgents] = useState<AgentLibraryResponse["agents"]>([]);
-  const [agentPersistence, setAgentPersistence] =
-    useState<AgentLibraryResponse["persistence"]>("not-configured");
+  const [savedAgentOverride, setSavedAgentOverride] = useState<
+    AgentLibraryResponse["agents"] | null
+  >(null);
   const [savingAgent, setSavingAgent] = useState<"a" | "b" | null>(null);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    async function loadConfiguration() {
-      const headers = authorizationHeaders(connectedAccessToken);
-      const [providerResult, agentResult] = await Promise.allSettled([
-        fetch("/api/providers", { headers, signal: controller.signal }).then((response) =>
-          readApiResponse<ProviderCatalogResponse>(response),
-        ),
-        fetch("/api/agents", { headers, signal: controller.signal }).then((response) =>
-          readApiResponse<AgentLibraryResponse>(response),
-        ),
-      ]);
-      if (providerResult.status === "fulfilled") {
-        const catalog = providerResult.value;
-        if (catalog.providers.some(({ id }) => id === "mock")) {
-          setProviders(catalog.providers);
-          const remoteModel = catalog.providers
-            .filter(({ id }) => id !== "mock")
-            .flatMap(({ models }) => models)[0];
-          if (remoteModel !== undefined) {
-            setAgentA((current) =>
-              current.providerId !== "mock"
-                ? current
-                : {
-                    ...detachSnapshot(current),
-                    modelId: remoteModel.id,
-                    providerId: remoteModel.providerId,
-                    strategy: "adaptive",
-                  },
-            );
-            setAgentB((current) =>
-              current.providerId !== "mock"
-                ? current
-                : {
-                    ...detachSnapshot(current),
-                    modelId: remoteModel.id,
-                    providerId: remoteModel.providerId,
-                    strategy: "adaptive",
-                  },
-            );
-          }
-        }
-      } else if (!(providerResult.reason instanceof DOMException && providerResult.reason.name === "AbortError")) {
-        setProviders(initialProviders);
-      }
-      if (agentResult.status === "fulfilled") {
-        setSavedAgents(agentResult.value.agents);
-        setAgentPersistence(agentResult.value.persistence);
-      }
-    }
-    void loadConfiguration();
-    return () => controller.abort();
-  }, [connectedAccessToken]);
+  const queryClient = useQueryClient();
+  const arenaDesignerForm = useForm<ArenaDesignerForm>({
+    defaultValues: { idea: "" },
+    mode: "onChange",
+    resolver: zodResolver(ArenaDesignerFormSchema),
+  });
+  const providerCatalogQuery = useQuery({
+    queryFn: async ({ signal }) => {
+      const response = await fetch("/api/providers", {
+        headers: authorizationHeaders(connectedAccessToken),
+        signal,
+      });
+      return readApiResponse<ProviderCatalogResponse>(response);
+    },
+    queryKey: ["provider-catalog", connectionRevision],
+  });
+  const agentLibraryQuery = useQuery({
+    queryFn: async ({ signal }) => {
+      const response = await fetch("/api/agents", {
+        headers: authorizationHeaders(connectedAccessToken),
+        signal,
+      });
+      return readApiResponse<AgentLibraryResponse>(response);
+    },
+    queryKey: ["agent-library", connectionRevision],
+  });
+  const providers = providerCatalogQuery.data?.providers ?? initialProviders;
+  const savedAgents = savedAgentOverride ?? agentLibraryQuery.data?.agents ?? [];
+  const agentPersistence = agentLibraryQuery.data?.persistence ?? "not-configured";
 
   const arena = useMemo(
     () => arenas.find(({ id }) => id === arenaId) ?? arenas[0],
@@ -250,12 +266,70 @@ export function Playground({ initialArenas }: PlaygroundProps) {
   }
 
   async function refreshAgentLibrary() {
-    const response = await fetch("/api/agents", {
-      headers: authorizationHeaders(connectedAccessToken),
-    });
-    const library = await readApiResponse<AgentLibraryResponse>(response);
-    setSavedAgents(library.agents);
-    setAgentPersistence(library.persistence);
+    const { data: library } = await agentLibraryQuery.refetch();
+    if (library === undefined) return;
+    setSavedAgentOverride(library.agents);
+  }
+
+  async function connectModelSources() {
+    const token = providerAccessToken.trim();
+    const nextRevision = connectionRevision + 1;
+    setConnecting(true);
+    setError(null);
+    try {
+      const [providerResult, agentResult] = await Promise.allSettled([
+        queryClient.fetchQuery({
+          queryFn: async ({ signal }) => {
+            const response = await fetch("/api/providers", {
+              headers: authorizationHeaders(token),
+              signal,
+            });
+            return readApiResponse<ProviderCatalogResponse>(response);
+          },
+          queryKey: ["provider-catalog", nextRevision],
+        }),
+        queryClient.fetchQuery({
+          queryFn: async ({ signal }) => {
+            const response = await fetch("/api/agents", {
+              headers: authorizationHeaders(token),
+              signal,
+            });
+            return readApiResponse<AgentLibraryResponse>(response);
+          },
+          queryKey: ["agent-library", nextRevision],
+        }),
+      ]);
+      setConnectedAccessToken(token);
+      setConnectionRevision(nextRevision);
+      if (agentResult.status === "fulfilled") {
+        setSavedAgentOverride(agentResult.value.agents);
+      }
+      if (providerResult.status === "fulfilled") {
+        const remoteModel = providerResult.value.providers
+          .filter(({ id }) => id !== "mock")
+          .flatMap(({ models }) => models)[0];
+        if (remoteModel !== undefined) {
+          const useRemoteModel = (current: AgentConfiguration): AgentConfiguration =>
+            current.providerId !== "mock"
+              ? current
+              : {
+                  ...detachSnapshot(current),
+                  modelId: remoteModel.id,
+                  providerId: remoteModel.providerId,
+                  strategy: "adaptive",
+                };
+          setAgentA(useRemoteModel);
+          setAgentB(useRemoteModel);
+        }
+      }
+      if (providerResult.status === "rejected" && agentResult.status === "rejected") {
+        throw providerResult.reason;
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Modellkildene kunne ikke kobles til");
+    } finally {
+      setConnecting(false);
+    }
   }
 
   async function selectSavedAgent(side: "a" | "b", agentId: string | null) {
@@ -288,9 +362,9 @@ export function Playground({ initialArenas }: PlaygroundProps) {
       const library = await readApiResponse<AgentLibraryResponse>(response);
       const found = library.agents[0];
       if (found === undefined) throw new Error(`Agent ${serialNumber} finnes ikke`);
-      setSavedAgents((current) => [
+      setSavedAgentOverride((current) => [
         found,
-        ...current.filter(({ agentId }) => agentId !== found.agentId),
+        ...(current ?? savedAgents).filter(({ agentId }) => agentId !== found.agentId),
       ]);
       await selectSavedAgent(side, found.agentId);
     } catch (caught) {
@@ -320,9 +394,9 @@ export function Playground({ initialArenas }: PlaygroundProps) {
         method: "POST",
       });
       const created = await readApiResponse<CreateAgentResponse>(response);
-      setSavedAgents((current) => [
+      setSavedAgentOverride((current) => [
         created.agent,
-        ...current.filter(({ agentId }) => agentId !== created.agent.agentId),
+        ...(current ?? savedAgents).filter(({ agentId }) => agentId !== created.agent.agentId),
       ]);
       if (side === "a") setAgentA(configurationFromSnapshot(created.snapshot));
       else setAgentB(configurationFromSnapshot(created.snapshot));
@@ -373,26 +447,34 @@ export function Playground({ initialArenas }: PlaygroundProps) {
       }
       throw new Error(message);
     }
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
+    if (!response.headers.get("content-type")?.startsWith("text/event-stream")) {
+      throw new Error("Duellserveren returnerte ikke en hendelsesstrøm");
+    }
+    const eventStream = response.body
+      .pipeThrough(new TextDecoderStream())
+      .pipeThrough(
+        new EventSourceParserStream({
+          maxBufferSize: 4 * 1_024 * 1_024,
+          onError: "terminate",
+        }),
+      );
+    const reader = eventStream.getReader();
     const events: EventEnvelope[] = [];
-    let buffer = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let frameEnd = buffer.indexOf("\n\n");
-      while (frameEnd >= 0) {
-        const frame = buffer.slice(0, frameEnd);
-        buffer = buffer.slice(frameEnd + 2);
-        frameEnd = buffer.indexOf("\n\n");
-        const dataLine = frame.split("\n").find((line) => line.startsWith("data: "));
-        if (dataLine === undefined) continue;
-        const message = JSON.parse(dataLine.slice(6)) as DuelStreamMessage;
+    let completed = false;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const message = parseDuelStreamMessage(value.data);
         if (message.kind === "event") {
+          if (message.event.sequence !== events.length) {
+            throw new Error("Duellstrømmen kom i uventet rekkefølge");
+          }
           events.push(message.event);
           setLiveResult(buildLiveResult(liveArena, events));
         } else if (message.kind === "result") {
+          if (completed) throw new Error("Duellstrømmen inneholdt flere sluttresultater");
+          completed = true;
           setResult(message.result);
           setReportToken(message.reportToken);
           setSelectedEvent(message.result.events[0] ?? null);
@@ -401,10 +483,16 @@ export function Playground({ initialArenas }: PlaygroundProps) {
           throw new Error(message.message);
         }
       }
+    } catch (error) {
+      await reader.cancel(error).catch(() => undefined);
+      throw error;
+    } finally {
+      reader.releaseLock();
     }
+    if (!completed) throw new Error("Duellstrømmen ble avsluttet før sluttresultatet kom");
   }
 
-  async function createArena() {
+  async function createArena({ idea }: ArenaDesignerForm) {
     setDesigning(true);
     setError(null);
     setDesignNotice(null);
@@ -412,7 +500,7 @@ export function Playground({ initialArenas }: PlaygroundProps) {
       const useModel = designerMode === "model" && remoteDesignerAvailable;
       const response = await fetch("/api/arena/design", {
         body: JSON.stringify({
-          idea: designerIdea,
+          idea,
           ...(useModel ? { modelId: agentA.modelId, providerId: agentA.providerId } : {}),
         }),
         headers: {
@@ -430,6 +518,7 @@ export function Playground({ initialArenas }: PlaygroundProps) {
       setDesignNotice(
         `${draft.source === "model" ? "Modellforslaget" : "Den sikre malen"} er validert og klar.${draft.lintWarnings.length > 0 ? ` ${draft.lintWarnings[0]}` : ""}`,
       );
+      arenaDesignerForm.reset();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Arenaen kunne ikke opprettes");
     } finally {
@@ -555,15 +644,23 @@ export function Playground({ initialArenas }: PlaygroundProps) {
                 </button>
 
                 {designerOpen && (
-                  <div className="space-y-3 rounded-xl border border-white/7 bg-black/15 p-3">
+                  <form
+                    className="space-y-3 rounded-xl border border-white/7 bg-black/15 p-3"
+                    onSubmit={arenaDesignerForm.handleSubmit(createArena)}
+                  >
                     <Textarea
                       aria-label="Beskriv en ny arena"
+                      aria-invalid={arenaDesignerForm.formState.errors.idea !== undefined}
                       className="min-h-24 resize-none text-xs"
                       maxLength={2_000}
-                      onChange={(event) => setDesignerIdea(event.target.value)}
                       placeholder="Eksempel: To AI-er forhandler om en knapp energireserve…"
-                      value={designerIdea}
+                      {...arenaDesignerForm.register("idea")}
                     />
+                    {arenaDesignerForm.formState.errors.idea !== undefined ? (
+                      <p className="text-[10px] leading-4 text-red-200">
+                        {arenaDesignerForm.formState.errors.idea.message}
+                      </p>
+                    ) : null}
                     <Select value={designerMode} onValueChange={(value: "local" | "model") => setDesignerMode(value)}>
                       <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                       <SelectContent>
@@ -571,11 +668,17 @@ export function Playground({ initialArenas }: PlaygroundProps) {
                         <SelectItem value="model" disabled={!remoteDesignerAvailable}>Agent As modell</SelectItem>
                       </SelectContent>
                     </Select>
-                    <Button className="w-full" disabled={designing || designerIdea.trim().length < 12} onClick={createArena} size="sm" variant="secondary">
+                    <Button
+                      className="w-full"
+                      disabled={designing || !arenaDesignerForm.formState.isValid}
+                      size="sm"
+                      type="submit"
+                      variant="secondary"
+                    >
                       <Sparkles /> {designing ? "Validerer…" : "Lag validert arena"}
                     </Button>
                     {designNotice !== null && <p className="text-[10px] leading-4 text-emerald-200">{designNotice}</p>}
-                  </div>
+                  </form>
                 )}
 
                 <div className="space-y-2 rounded-xl border border-white/7 bg-black/15 p-3">
@@ -591,12 +694,12 @@ export function Playground({ initialArenas }: PlaygroundProps) {
                   </label>
                   <Button
                     className="w-full"
-                    disabled={providerAccessToken.trim().length === 0}
-                    onClick={() => setConnectedAccessToken(providerAccessToken.trim())}
+                    disabled={connecting || providerAccessToken.trim().length === 0}
+                    onClick={() => void connectModelSources()}
                     size="sm"
                     variant="outline"
                   >
-                    <ShieldCheck /> Koble til modellkildene
+                    <ShieldCheck /> {connecting ? "Kobler til…" : "Koble til modellkildene"}
                   </Button>
                   <p className="text-[10px] leading-4 text-muted-foreground">
                     Nøkkelen holdes kun i denne fanens minne og sendes som Bearer-header.

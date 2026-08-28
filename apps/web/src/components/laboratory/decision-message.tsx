@@ -34,9 +34,10 @@ export function DecisionMessage({
           {actorName} · {scripted ? "SCRIPTED KONTROLL" : `${Math.round(confidence * 100)} % sikker`}
         </p>
         <MessageResponse>{message}</MessageResponse>
-        <p className="mt-2 border-t border-white/8 pt-2 text-[10px] leading-4 text-muted-foreground">
-          Begrunnelse: {rationale}
-        </p>
+        <div className="mt-2 border-t border-white/8 pt-2 text-[10px] leading-4 text-muted-foreground">
+          <p className="mb-1 font-medium">Begrunnelse</p>
+          <MessageResponse>{rationale}</MessageResponse>
+        </div>
       </MessageContent>
     </Message>
   );

@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@ai-lab/domain": "workspace:*",
+    "@ai-sdk/openai-compatible": "^3.0.37",
+    "ai": "^7.0.71",
     "zod": "^4.4.3"
   }
 }

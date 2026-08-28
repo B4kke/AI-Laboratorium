@@ -16,11 +16,13 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
+    "test:e2e": "playwright test",
     "test:watch": "vitest",
     "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "evolve:demo": "pnpm --filter @ai-lab/runner demo"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
@@ -28,6 +30,7 @@
     "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.3.1",
+    "fast-check": "^4.9.0",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.12",
     "typescript": "^6.0.3",

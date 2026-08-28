@@ -4,6 +4,7 @@ import type { ArenaSpec, DuelResult, EventEnvelope } from "@ai-lab/domain";
 import { parseEventPayload, toReadableEvent } from "@ai-lab/events";
 import { Download, Fingerprint, Gauge, ListTree, ShieldCheck } from "lucide-react";
 
+import { MessageResponse } from "@/components/ai-elements/message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -33,11 +34,25 @@ const providerNames: Record<DuelResult["providerSnapshots"][number]["providerId"
   "opencode-zen": "OpenCode Zen",
 };
 
-function DetailRow({ label, value }: { label: string; value: string | number }) {
+function DetailRow({
+  generated = false,
+  label,
+  value,
+}: {
+  generated?: boolean;
+  label: string;
+  value: string | number;
+}) {
   return (
     <div className="grid gap-1 border-b border-white/6 py-3 last:border-0">
       <dt className="text-[10px] font-medium tracking-[0.12em] text-muted-foreground uppercase">{label}</dt>
-      <dd className="m-0 text-xs leading-5 text-foreground/90">{value}</dd>
+      <dd className="m-0 text-xs leading-5 text-foreground/90">
+        {generated && typeof value === "string" ? (
+          <MessageResponse>{value}</MessageResponse>
+        ) : (
+          value
+        )}
+      </dd>
     </div>
   );
 }
@@ -80,12 +95,13 @@ function EventDetails({ event }: { event: EventEnvelope | null }) {
               </div>
               <Progress value={payload.trace.confidence * 100} className="h-1" />
             </div>
-            <DetailRow label="Mål" value={payload.trace.goal} />
-            <DetailRow label="Melding til motparten" value={payload.trace.message || "Ingen melding"} />
-            <DetailRow label="Kort begrunnelse" value={payload.trace.rationale} />
+            <DetailRow generated label="Mål" value={payload.trace.goal} />
+            <DetailRow generated label="Melding til motparten" value={payload.trace.message || "Ingen melding"} />
+            <DetailRow generated label="Kort begrunnelse" value={payload.trace.rationale} />
             <DetailRow label="Observasjon" value={payload.trace.observation} />
             {payload.trace.memoryWrite !== undefined && (
               <DetailRow
+                generated
                 label={`Minnekandidat · ${payload.trace.memoryWrite.category}`}
                 value={payload.trace.memoryWrite.content}
               />

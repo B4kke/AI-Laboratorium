@@ -3,6 +3,8 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
 import { SpeedInsights } from "@vercel/speed-insights/next";
 
+import { LaboratoryQueryProvider } from "@/components/query-provider";
+
 import "./globals.css";
 
 const geistSans = Geist({
@@ -35,7 +37,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="nb" className={`${geistSans.variable} ${geistMono.variable} dark`}>
       <body className="antialiased">
-        {children}
+        <LaboratoryQueryProvider>{children}</LaboratoryQueryProvider>
         <Analytics />
         <SpeedInsights />
       </body>

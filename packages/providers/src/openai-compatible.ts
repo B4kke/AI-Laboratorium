@@ -2,6 +2,11 @@ import {
   ProviderSnapshotSchema,
   type ProviderSnapshot,
 } from "@ai-lab/domain";
+import {
+  createOpenAICompatible,
+  type OpenAICompatibleProvider as AiSdkOpenAICompatibleProvider,
+} from "@ai-sdk/openai-compatible";
+import { APICallError, generateText as generateSdkText } from "ai";
 import { z } from "zod";
 
 import { ProviderError } from "./errors";
@@ -30,35 +35,6 @@ const ModelsResponseSchema = z
           .passthrough(),
       )
       .max(1_000),
-  })
-  .passthrough();
-
-const ChatCompletionSchema = z
-  .object({
-    choices: z
-      .array(
-        z
-          .object({
-            finish_reason: z.string().max(100).nullable().optional(),
-            message: z
-              .object({
-                content: z.string().max(50_000),
-              })
-              .passthrough(),
-          })
-          .passthrough(),
-      )
-      .min(1)
-      .max(8),
-    model: z.string().trim().min(1).max(200).optional(),
-    usage: z
-      .object({
-        completion_tokens: z.number().int().nonnegative().max(10_000_000).optional(),
-        prompt_tokens: z.number().int().nonnegative().max(10_000_000).optional(),
-        total_tokens: z.number().int().nonnegative().max(10_000_000).optional(),
-      })
-      .passthrough()
-      .optional(),
   })
   .passthrough();
 
@@ -182,11 +158,41 @@ async function readBoundedErrorBody(response: Response): Promise<string | undefi
   }
 }
 
+function sanitizeErrorDetail(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const sanitized = value.replace(/\s+/g, " ").trim();
+  return sanitized.length === 0 ? undefined : sanitized.slice(0, 300);
+}
+
+function apiErrorDetail(error: APICallError): string | undefined {
+  const data = error.data;
+  if (typeof data === "object" && data !== null && "error" in data) {
+    const nested = data.error;
+    if (typeof nested === "object" && nested !== null && "message" in nested) {
+      const message = nested.message;
+      if (typeof message === "string") return sanitizeErrorDetail(message);
+    }
+  }
+  return sanitizeErrorDetail(error.message);
+}
+
+type SdkCompletion = {
+  finishReason: string;
+  modelId: string;
+  text: string;
+  usage: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+  };
+};
+
 export class OpenAICompatibleProvider implements ModelProvider {
   readonly id: OpenAICompatibleProviderOptions["id"];
   readonly #apiKey: string | undefined;
   readonly #baseUrl: string;
   readonly #origin: string;
+  readonly #sdkProvider: AiSdkOpenAICompatibleProvider<string, string, string, string>;
   readonly #confirmedFreeModelIds: ReadonlySet<string>;
   readonly #fetcher: typeof fetch;
   readonly #modelClassifier: ((id: string) => FreeClassification) | undefined;
@@ -216,6 +222,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
     this.#random = options.random ?? Math.random;
     this.#requestTimeoutMs = options.requestTimeoutMs ?? 45_000;
     this.#sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+    this.#sdkProvider = createOpenAICompatible({
+      ...(this.#apiKey === undefined ? {} : { apiKey: this.#apiKey }),
+      baseURL: this.#baseUrl,
+      fetch: (input, init) => this.#sdkFetch(input, init),
+      name: this.id,
+      supportsStructuredOutputs: false,
+    });
   }
 
   async listModels(): Promise<readonly ModelDescriptor[]> {
@@ -280,40 +293,29 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
   async #chatCompletion(init: {
     defaultMaxTokens?: number | undefined;
-    messages: ReadonlyArray<{ content: string; role: string }>;
+    messages: ReadonlyArray<{ content: string; role: "assistant" | "system" | "user" }>;
     modelId: string;
     onAttempt?: () => void;
     requestedMaxTokens?: number | undefined;
     signal?: AbortSignal | undefined;
     temperature?: number | undefined;
-  }): Promise<z.infer<typeof ChatCompletionSchema>> {
+  }): Promise<SdkCompletion> {
     const initialMaxTokens = init.requestedMaxTokens ?? init.defaultMaxTokens;
     let maxTokens =
       initialMaxTokens === undefined
         ? undefined
         : Math.max(64, Math.min(8_192, initialMaxTokens));
     for (;;) {
-      init.onAttempt?.();
-      let response: z.infer<typeof ChatCompletionSchema>;
+      let response: SdkCompletion;
       try {
-        response = await this.#requestJson(
-          "/chat/completions",
-          {
-            body: JSON.stringify({
-              ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
-              messages: init.messages.map(({ content, role }) => ({ content, role })),
-              model: init.modelId,
-              stream: false,
-              ...(init.temperature === undefined ? {} : { temperature: init.temperature }),
-            }),
-            headers: { "Content-Type": "application/json" },
-            method: "POST",
-          },
-          ChatCompletionSchema,
-          completionResponseLimitBytes,
-          false,
-          init.signal,
-        );
+        response = await this.#generateSdkCompletion({
+          maxTokens,
+          messages: init.messages,
+          modelId: init.modelId,
+          ...(init.onAttempt === undefined ? {} : { onAttempt: init.onAttempt }),
+          ...(init.signal === undefined ? {} : { signal: init.signal }),
+          ...(init.temperature === undefined ? {} : { temperature: init.temperature }),
+        });
       } catch (error) {
         const tokenLimitRejection =
           error instanceof ProviderError &&
@@ -323,10 +325,81 @@ export class OpenAICompatibleProvider implements ModelProvider {
         maxTokens = Math.floor((maxTokens ?? 1024) / 2);
         continue;
       }
-      const finishReason = response.choices[0]?.finish_reason;
-      if (finishReason !== "length" || (maxTokens ?? 0) >= 8_192) return response;
+      if (response.finishReason !== "length" || (maxTokens ?? 0) >= 8_192) return response;
       maxTokens = Math.min(8_192, (maxTokens ?? 1024) * 2);
     }
+  }
+
+  async #generateSdkCompletion(init: {
+    maxTokens: number | undefined;
+    messages: ReadonlyArray<{ content: string; role: "assistant" | "system" | "user" }>;
+    modelId: string;
+    onAttempt?: () => void;
+    signal?: AbortSignal;
+    temperature?: number;
+  }): Promise<SdkCompletion> {
+    let lastError: ProviderError | undefined;
+    const deadline = Date.now() + this.#requestTimeoutMs;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        lastError = new ProviderError("timeout", "Providerforespørselen fikk tidsavbrudd", {
+          retryable: true,
+        });
+        break;
+      }
+      init.onAttempt?.();
+      try {
+        const result = await generateSdkText({
+          allowSystemInMessages: true,
+          ...(init.signal === undefined ? {} : { abortSignal: init.signal }),
+          ...(init.maxTokens === undefined ? {} : { maxOutputTokens: init.maxTokens }),
+          maxRetries: 0,
+          messages: init.messages.map(({ content, role }) => ({ content, role })),
+          model: this.#sdkProvider.chatModel(init.modelId),
+          ...(init.temperature === undefined ? {} : { temperature: init.temperature }),
+          timeout: remainingMs,
+        });
+        this.#consecutiveFailures = 0;
+        return {
+          finishReason: result.rawFinishReason ?? result.finishReason,
+          modelId: result.response.modelId,
+          text: result.text,
+          usage: {
+            ...(result.usage.inputTokens === undefined
+              ? {}
+              : { inputTokens: result.usage.inputTokens }),
+            ...(result.usage.outputTokens === undefined
+              ? {}
+              : { outputTokens: result.usage.outputTokens }),
+            ...(result.usage.totalTokens === undefined
+              ? {}
+              : { totalTokens: result.usage.totalTokens }),
+          },
+        };
+      } catch (error) {
+        lastError = this.#normalizeSdkError(error, init.signal);
+        if (!lastError.retryable) {
+          this.#recordFailure();
+          throw lastError;
+        }
+      }
+
+      if (attempt < 2) {
+        const baseBackoffMs = 50 * 2 ** attempt;
+        const jitterMs = Math.floor(baseBackoffMs * 0.5 * this.#random());
+        const backoffMs = Math.min(
+          baseBackoffMs + jitterMs,
+          Math.max(0, deadline - Date.now()),
+        );
+        if (backoffMs > 0) await this.#sleep(backoffMs);
+      }
+    }
+
+    this.#recordFailure();
+    throw lastError ?? new ProviderError("request-failed", "Providerforespørselen feilet", {
+      retryable: true,
+    });
   }
 
   async generateDecision(request: DecisionRequest): Promise<DecisionResult> {
@@ -360,33 +433,29 @@ export class OpenAICompatibleProvider implements ModelProvider {
         signal: request.signal,
         temperature: semanticAttempt === 0 ? 0.2 : 0,
       });
-      this.#assertModelIdentity(body.model, request.modelId);
-      const firstChoice = body.choices[0];
-      if (firstChoice === undefined) {
-        throw new ProviderError("invalid-response", "Provideren returnerte ingen valg");
-      }
-      if (firstChoice.finish_reason === "length") {
+      this.#assertModelIdentity(body.modelId, request.modelId);
+      if (body.finishReason === "length") {
         throw new ProviderError(
           "invalid-response",
           "Provideren avkortet beslutningen midt i svaret selv ved maksimal token-budsjett",
         );
       }
-      inputTokens += body.usage?.prompt_tokens ?? 0;
-      outputTokens += body.usage?.completion_tokens ?? 0;
-      totalTokens += body.usage?.total_tokens ?? 0;
+      inputTokens += body.usage.inputTokens ?? 0;
+      outputTokens += body.usage.outputTokens ?? 0;
+      totalTokens += body.usage.totalTokens ?? 0;
       try {
         return {
-          finishReason: firstChoice.finish_reason ?? "unknown",
+          finishReason: body.finishReason,
           latencyMs: performance.now() - startedAt,
           modelId: request.modelId,
           providerId: this.id,
-          trace: parseDecisionTrace(firstChoice.message.content, request),
+          trace: parseDecisionTrace(body.text, request),
           usage: { inputTokens, outputTokens, requestCount, totalTokens },
         };
       } catch (error) {
         lastError = error;
         repairMessages = [
-          { content: firstChoice.message.content.slice(0, 4_000), role: "assistant" },
+          { content: body.text.slice(0, 4_000), role: "assistant" },
           {
             content:
               "Svaret var ikke gyldig etter det avtalte JSON-skjemaet eller valgte en ulovlig handling. Returner hele det korrigerte JSON-objektet, med én lovlig actionId, og ingenting annet.",
@@ -418,26 +487,22 @@ export class OpenAICompatibleProvider implements ModelProvider {
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       temperature: request.temperature ?? 0.15,
     });
-    this.#assertModelIdentity(body.model, request.modelId);
-    const firstChoice = body.choices[0];
-    if (firstChoice === undefined) {
-      throw new ProviderError("invalid-response", "Provideren returnerte ingen tekst");
-    }
+    this.#assertModelIdentity(body.modelId, request.modelId);
     return {
-      content: firstChoice.message.content,
-      finishReason: firstChoice.finish_reason ?? "unknown",
+      content: body.text,
+      finishReason: body.finishReason,
       latencyMs: performance.now() - startedAt,
       modelId: request.modelId,
       providerId: this.id,
       usage: {
-        ...(body.usage?.prompt_tokens === undefined
+        ...(body.usage.inputTokens === undefined
           ? {}
-          : { inputTokens: body.usage.prompt_tokens }),
-        ...(body.usage?.completion_tokens === undefined
+          : { inputTokens: body.usage.inputTokens }),
+        ...(body.usage.outputTokens === undefined
           ? {}
-          : { outputTokens: body.usage.completion_tokens }),
+          : { outputTokens: body.usage.outputTokens }),
         requestCount: 1,
-        ...(body.usage?.total_tokens === undefined ? {} : { totalTokens: body.usage.total_tokens }),
+        ...(body.usage.totalTokens === undefined ? {} : { totalTokens: body.usage.totalTokens }),
       },
     };
   }
@@ -487,6 +552,110 @@ export class OpenAICompatibleProvider implements ModelProvider {
       throw new ProviderError("request-failed", `Modellen ${modelId} finnes ikke i dagens katalog`);
     }
     return model;
+  }
+
+  #normalizeSdkError(error: unknown, externalSignal: AbortSignal | undefined): ProviderError {
+    if (externalSignal?.aborted === true) {
+      return new ProviderError("cancelled", "Providerforespørselen ble avbrutt", { cause: error });
+    }
+    if (error instanceof ProviderError) return error;
+    if (error instanceof Error && error.cause instanceof ProviderError) return error.cause;
+    if (APICallError.isInstance(error)) {
+      const status = error.statusCode;
+      const detail = apiErrorDetail(error);
+      const retryable = error.isRetryable || status === 429 || (status !== undefined && status >= 500);
+      return new ProviderError(
+        status === 429 ? "rate-limited" : "request-failed",
+        status === undefined
+          ? `Providerforespørselen feilet${detail === undefined ? "" : `: ${detail}`}`
+          : `Provideren svarte HTTP ${status}${detail === undefined ? "" : `: ${detail}`}`,
+        {
+          cause: error,
+          retryable,
+          ...(status === undefined ? {} : { status }),
+        },
+      );
+    }
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return new ProviderError("timeout", "Providerforespørselen fikk tidsavbrudd", {
+        cause: error,
+        retryable: true,
+      });
+    }
+    return new ProviderError("request-failed", "Providerforespørselen feilet", {
+      cause: error,
+      retryable: true,
+    });
+  }
+
+  async #sdkFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    if (this.#circuitOpenUntil > Date.now()) {
+      throw new ProviderError("circuit-open", "Providerkretsen er midlertidig åpen", {
+        retryable: true,
+      });
+    }
+    if (this.#apiKey === undefined || this.#apiKey.length === 0) {
+      throw new ProviderError("not-configured", `${this.id} mangler API-nøkkel`);
+    }
+
+    const requestUrl = new URL(
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+    );
+    if (
+      requestUrl.origin !== this.#origin ||
+      !requestUrl.pathname.startsWith(`${new URL(this.#baseUrl).pathname}/`)
+    ) {
+      throw new ProviderError("invalid-response", "AI SDK forsøkte en uventet provider-URL");
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.#requestTimeoutMs);
+    const upstreamSignal = init?.signal ?? undefined;
+    const signal =
+      upstreamSignal === undefined
+        ? controller.signal
+        : AbortSignal.any([controller.signal, upstreamSignal]);
+    const deadline = Date.now() + this.#requestTimeoutMs;
+    try {
+      const response = await this.#fetcher(input, {
+        ...init,
+        redirect: "error",
+        signal,
+      });
+      if (response.url.length > 0 && new URL(response.url).origin !== this.#origin) {
+        await response.body?.cancel("Uventet provider-origin");
+        throw new ProviderError("invalid-response", "Provideren svarte fra en uventet origin");
+      }
+
+      const body = await readBoundedJsonResponse(
+        response,
+        completionResponseLimitBytes,
+        deadline,
+      );
+      const headers = new Headers(response.headers);
+      headers.delete("content-encoding");
+      headers.delete("content-length");
+      return new Response(JSON.stringify(body), {
+        headers,
+        status: response.status,
+        statusText: response.statusText,
+      });
+    } catch (error) {
+      if (upstreamSignal?.aborted === true) {
+        throw new ProviderError("cancelled", "Providerforespørselen ble avbrutt", {
+          cause: error,
+        });
+      }
+      if (controller.signal.aborted) {
+        throw new ProviderError("timeout", "Providerforespørselen fikk tidsavbrudd", {
+          cause: error,
+          retryable: true,
+        });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   async #requestJson<T>(

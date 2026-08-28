@@ -3,6 +3,7 @@
 import type { AgentConfiguration } from "@ai-lab/domain";
 import { Bot, CircleDot, Database, FileText, MemoryStick, Save, Sparkles } from "lucide-react";
 
+import { MessageResponse } from "@/components/ai-elements/message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -265,9 +266,9 @@ export function AgentConfig({
                   {supportingFiles.map((file) => (
                     <div className="rounded-md border border-white/7 p-2" key={file.path}>
                       <p className="font-mono text-[9px] text-cyan-100">{file.path}</p>
-                      <pre className="mt-1 whitespace-pre-wrap text-[10px] leading-4 text-muted-foreground">
+                      <MessageResponse className="mt-1 text-[10px] leading-4 text-muted-foreground">
                         {file.content}
-                      </pre>
+                      </MessageResponse>
                     </div>
                   ))}
                 </div>
@@ -284,7 +285,9 @@ export function AgentConfig({
                   {agent.memoryContext?.map((memory, index) => (
                     <div className="rounded-md border border-white/7 p-2" key={`${memory.category}-${index}`}>
                       <p className="font-mono text-[9px] text-violet-100">{memory.category}</p>
-                      <p className="mt-1 text-[10px] leading-4 text-muted-foreground">{memory.content}</p>
+                      <MessageResponse className="mt-1 text-[10px] leading-4 text-muted-foreground">
+                        {memory.content}
+                      </MessageResponse>
                     </div>
                   ))}
                 </div>

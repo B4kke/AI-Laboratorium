@@ -19,7 +19,7 @@ export type CreateAgentResponse = AgentDetailResponse;
 
 export type EvolutionEnqueueResponse = {
   estimatedProviderCalls: number;
-  job: EvolutionJob<EvolutionRequest>;
+  job: EvolutionJob<EvolutionRequest, StoredEvolutionResult>;
 };
 
 export type EvolutionStatusResponse = {

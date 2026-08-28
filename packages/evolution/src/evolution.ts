@@ -629,9 +629,6 @@ function combineUsage(...usages: readonly NormalizedUsage[]): NormalizedUsage {
       const inputTokens = (combined.inputTokens ?? 0) + (usage.inputTokens ?? 0);
       const outputTokens = (combined.outputTokens ?? 0) + (usage.outputTokens ?? 0);
       const requestCount = (combined.requestCount ?? 0) + (usage.requestCount ?? 1);
-      const totalTokens =
-        (combined.totalTokens ?? 0) +
-        (usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0));
       const result: NormalizedUsage = {};
       if (inputTokens !== 0) result.inputTokens = inputTokens;
       if (outputTokens !== 0) result.outputTokens = outputTokens;

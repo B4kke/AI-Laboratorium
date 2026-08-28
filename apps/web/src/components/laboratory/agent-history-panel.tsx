@@ -151,7 +151,9 @@ export function AgentHistoryPanel({
               selected.memory.items.map((item) => (
                 <div className="rounded-md border border-white/6 p-2" key={`${item.sourceMatchId}-${item.content}`}>
                   <Badge className="mb-1 text-[9px]" variant="outline">{item.category}</Badge>
-                  <p className="text-xs leading-5 text-muted-foreground">{item.content}</p>
+                  <MessageResponse className="text-xs leading-5 text-muted-foreground">
+                    {item.content}
+                  </MessageResponse>
                   <p className="mt-1 font-mono text-[9px] text-muted-foreground">
                     {(item.sourceMatchIds ?? [item.sourceMatchId]).length} kildekamp(er)
                   </p>

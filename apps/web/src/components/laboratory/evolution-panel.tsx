@@ -8,10 +8,8 @@ import {
   type EvolutionRequest,
   type StoredEvolutionResult,
 } from "@ai-lab/evolution";
-import type {
-  EvolutionJob,
-  EvolutionFeedItem,
-} from "@ai-lab/db";
+import type { EvolutionFeedItem } from "@ai-lab/db";
+import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
   ArrowRight,
@@ -26,7 +24,7 @@ import {
   Trash2,
   Trophy,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { MessageResponse } from "@/components/ai-elements/message";
 import { AgentHistoryPanel } from "@/components/laboratory/agent-history-panel";
@@ -114,91 +112,67 @@ export function EvolutionPanel({
   const [mutationModelKey, setMutationModelKey] = useState("");
   const [slotOverrides, setSlotOverrides] = useState<SlotOverrideDraft[]>([]);
   const [resolvedAgents, setResolvedAgents] = useState<AgentLibraryResponse["agents"]>([]);
-  const [running, setRunning] = useState(false);
+  const [enqueueing, setEnqueueing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<StoredEvolutionResult | null>(null);
-  const [job, setJob] = useState<
+  const [queuedJob, setQueuedJob] = useState<
     EvolutionEnqueueResponse["job"] | EvolutionStatusResponse["job"] | null
   >(null);
-  const [feed, setFeed] = useState<readonly EvolutionFeedItem[]>([]);
-  const [recentJobs, setRecentJobs] = useState<
-    readonly EvolutionJob<EvolutionRequest, StoredEvolutionResult>[]
-  >([]);
-  const pollController = useRef<AbortController | null>(null);
-
-  const refreshJobList = useCallback(
-    async (signal?: AbortSignal) => {
+  const [activeJobId, setActiveJobId] = useState<string | null>(() =>
+    typeof window === "undefined" ? null : localStorage.getItem(storedEvolutionJobKey),
+  );
+  const completedNotification = useRef<string | null>(null);
+  const accessScope = accessToken.length === 0 ? "public" : "authenticated";
+  const recentJobsQuery = useQuery({
+    queryFn: async ({ signal }) => {
       const response = await fetch("/api/evolution", {
         headers: authorizationHeaders(accessToken),
-        ...(signal === undefined ? {} : { signal }),
+        signal,
       });
-      const body = await readApiResponse<EvolutionJobsResponse>(response);
-      setRecentJobs(body.jobs);
-      return body.jobs;
+      return readApiResponse<EvolutionJobsResponse>(response);
     },
-    [accessToken],
-  );
-
-  const pollJob = useCallback(
-    async (jobId: string, controller: AbortController) => {
-      setRunning(true);
-      localStorage.setItem(storedEvolutionJobKey, jobId);
-      try {
-        while (!controller.signal.aborted) {
-          const response = await fetch(`/api/evolution/${jobId}`, {
-            headers: authorizationHeaders(accessToken),
-            signal: controller.signal,
-          });
-          const status = await readApiResponse<EvolutionStatusResponse>(response);
-          setJob(status.job);
-          setFeed(status.feed);
-          if (status.job.status === "completed" && status.job.result !== null) {
-            setResult(status.job.result);
-            await Promise.all([onAgentsChanged(), refreshJobList(controller.signal)]);
-            return;
-          }
-          if (status.job.status === "failed") {
-            throw new Error(status.job.error ?? "Evolution-jobben feilet");
-          }
-          await new Promise((resolve) => setTimeout(resolve, 1_500));
-        }
-      } finally {
-        if (pollController.current === controller) {
-          pollController.current = null;
-          setRunning(false);
-        }
-      }
+    queryKey: ["evolution-jobs", accessScope],
+  });
+  const jobStatusQuery = useQuery({
+    enabled: activeJobId !== null,
+    queryFn: async ({ signal }) => {
+      if (activeJobId === null) throw new Error("Mangler evolution-jobb");
+      const response = await fetch(`/api/evolution/${activeJobId}`, {
+        headers: authorizationHeaders(accessToken),
+        signal,
+      });
+      return readApiResponse<EvolutionStatusResponse>(response);
     },
-    [accessToken, onAgentsChanged, refreshJobList],
-  );
+    queryKey: ["evolution-job", activeJobId, accessScope],
+    refetchInterval: (query) => {
+      const status = query.state.data?.job.status;
+      return status === "queued" || status === "running" || status === undefined
+        ? 1_500
+        : false;
+    },
+  });
+  const recentJobs = recentJobsQuery.data?.jobs ?? [];
+  const statusResponse = jobStatusQuery.data;
+  const job = statusResponse?.job ?? queuedJob;
+  const feed: readonly EvolutionFeedItem[] = statusResponse?.feed ?? [];
+  const result: StoredEvolutionResult | null = job?.result ?? null;
+  const jobIsRunning = job?.status === "queued" || job?.status === "running";
+  const running = enqueueing || jobIsRunning;
+  const queryError =
+    jobStatusQuery.error ?? (recentJobsQuery.error !== null ? recentJobsQuery.error : null);
+  const visibleError =
+    error ??
+    (job?.status === "failed" ? (job.error ?? "Evolution-jobben feilet") : null) ??
+    (queryError instanceof Error ? queryError.message : null);
 
   useEffect(() => {
-    const controller = new AbortController();
-    pollController.current?.abort();
-    pollController.current = controller;
-    async function restore() {
-      try {
-        const jobs = await refreshJobList(controller.signal);
-        const storedId = localStorage.getItem(storedEvolutionJobKey);
-        const stored = jobs.find(({ id }) => id === storedId);
-        if (stored === undefined) return;
-        setJob(stored);
-        if (stored.status === "completed" && stored.result !== null) {
-          setResult(stored.result);
-          return;
-        }
-        if (stored.status === "queued" || stored.status === "running") {
-          await pollJob(stored.id, controller);
-        }
-      } catch (caught) {
-        if (!(caught instanceof DOMException && caught.name === "AbortError")) {
-          setError(caught instanceof Error ? caught.message : "Evolution-jobben kunne ikke gjenopptas");
-        }
+    const statusJob = statusResponse?.job;
+    if (statusJob?.status === "completed" && statusJob.result !== null) {
+      if (completedNotification.current !== statusJob.id) {
+        completedNotification.current = statusJob.id;
+        void Promise.all([onAgentsChanged(), recentJobsQuery.refetch()]);
       }
     }
-    void restore();
-    return () => controller.abort();
-  }, [pollJob, refreshJobList]);
+  }, [onAgentsChanged, recentJobsQuery, statusResponse]);
 
   const remoteModels = useMemo(
     () =>
@@ -328,14 +302,10 @@ export function EvolutionPanel({
       }),
       trialsPerCandidate,
     };
-    pollController.current?.abort();
-    const controller = new AbortController();
-    pollController.current = controller;
-    setRunning(true);
+    setEnqueueing(true);
     setError(null);
-    setResult(null);
-    setFeed([]);
-    setJob(null);
+    setQueuedJob(null);
+    setActiveJobId(null);
     try {
       const enqueueResponse = await fetch("/api/evolution", {
         body: JSON.stringify(request),
@@ -344,38 +314,24 @@ export function EvolutionPanel({
           "Content-Type": "application/json",
         },
         method: "POST",
-        signal: controller.signal,
       });
       const queued = await readApiResponse<EvolutionEnqueueResponse>(enqueueResponse);
-      setJob(queued.job);
+      setQueuedJob(queued.job);
       localStorage.setItem(storedEvolutionJobKey, queued.job.id);
-      await refreshJobList(controller.signal);
-      await pollJob(queued.job.id, controller);
+      setActiveJobId(queued.job.id);
+      await recentJobsQuery.refetch();
     } catch (caught) {
-      if (!(caught instanceof DOMException && caught.name === "AbortError")) {
-        setError(caught instanceof Error ? caught.message : "Evolusjonen feilet");
-      }
+      setError(caught instanceof Error ? caught.message : "Evolusjonen feilet");
     } finally {
-      if (pollController.current === controller) {
-        pollController.current = null;
-        setRunning(false);
-      }
+      setEnqueueing(false);
     }
   }
 
-  async function openRecentJob(jobId: string) {
-    pollController.current?.abort();
-    const controller = new AbortController();
-    pollController.current = controller;
+  function openRecentJob(jobId: string) {
     setError(null);
-    setFeed([]);
-    try {
-      await pollJob(jobId, controller);
-    } catch (caught) {
-      if (!(caught instanceof DOMException && caught.name === "AbortError")) {
-        setError(caught instanceof Error ? caught.message : "Evolution-jobben kunne ikke åpnes");
-      }
-    }
+    setQueuedJob(recentJobs.find(({ id }) => id === jobId) ?? null);
+    localStorage.setItem(storedEvolutionJobKey, jobId);
+    setActiveJobId(jobId);
   }
 
   function prepareWinnerForNextRun() {
@@ -384,9 +340,9 @@ export function EvolutionPanel({
       { agentId: result.winner.agentId, index: 0, modelKey: "default" },
       ...current.filter(({ index }) => index !== 0),
     ]);
-    setResult(null);
-    setJob(null);
-    setFeed([]);
+    setQueuedJob(null);
+    setActiveJobId(null);
+    localStorage.removeItem(storedEvolutionJobKey);
     setError(null);
   }
 
@@ -683,13 +639,13 @@ export function EvolutionPanel({
       </aside>
 
       <main className="laboratory-grid min-h-[680px] rounded-2xl border border-white/8 bg-[#0d111b]/88 p-5 sm:p-7">
-        {error !== null ? (
+        {visibleError !== null ? (
           <div role="alert" className="mb-5 rounded-xl border border-red-300/15 bg-red-400/[0.06] p-4 text-sm text-red-100">
-            {error}
+            {visibleError}
           </div>
         ) : null}
 
-        {running || (job !== null && job.status !== "completed") ? (
+        {running ? (
           <section className="mb-6 rounded-xl border border-cyan-300/12 bg-cyan-300/[0.035] p-4">
             <div className="mb-3 flex items-center justify-between gap-4 text-xs">
               <span className="text-cyan-100">
