@@ -1,3 +1,4 @@
+export * from "./capabilities";
 export * from "./errors";
 export * from "./environment";
 export * from "./mock";

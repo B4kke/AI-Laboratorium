@@ -54,6 +54,14 @@ cp .env.example .env.local
 
 NVIDIA sitt `/models`-endepunkt oppgir ikke pris. Derfor behandles ingen NIM-modell som gratis uten en eksplisitt, kommaseparert allowlist i runtime-miljøet. Vanlig `deepseek-v4-flash` hos OpenCode Zen behandles ikke som gratis; den eksplisitte `-free`-varianten gjør det.
 
+Anbefalte gratis-modeller:
+
+- NVIDIA NIM Nemotron: `nvidia/nemotron-3.5-lightning-30b-a3b` (legg i `NVIDIA_CONFIRMED_FREE_MODELS` etter å ha bekreftet gratis-status for egen konto; også `nvidia/nemotron-nano-3-30b-a3b`, `nvidia/nemotron-3-super-120b-a12b` er aktuelle).
+- OpenCode Zen Nemotron: `nemotron-3.5-lightning-free` (chat-completions, `-free`-suffiks gir `confirmed-free`).
+- OpenCode Zen Muse: `muse-spark-1.3-contributor-free` (Responses-only, 1M kontekst, 131k maks output, input/output/cached-read = $0; kan oppgis med eller uten `opencode/`-prefiks).
+
+Muse Spark på Zen er Responses-only: adapteren ruter disse automatisk til `/responses` (med `store: false`, `max_output_tokens` og `text.format: json_object` for beslutninger) og normaliserer `input_tokens`/`output_tokens`/`total_tokens`, `finishReason` (`completed`→`stop`, `incomplete`→`length`) og `requestCount` til samme interne kontrakt som chat-modeller. Kapabiliteter (`supportsStructuredOutput`, `supportsTools`, `endpointFamily`) utledes per modell: Muse og Nemotron chat-modeller får `true`/`true`, mens safety/embed/parse/reward får `false`/`false`.
+
 Alle API-nøkler leses kun på serveren. Nettleseren mottar bare providerstatus og bekreftede gratis-modeller. Når en ekstern provider-nøkkel er konfigurert, må `AI_LAB_ACCESS_TOKEN` også settes til en tilfeldig verdi på minst 32 tegn. Godkjente brukere skriver denne i feltet «Tilgang til eksterne modeller»; verdien holdes bare i fanens minne og sendes som Bearer-header.
 
 Provider-nøkkelen konfigureres én gang per web/worker-runtime og gjenbrukes av alle agentplasser. En kjøring kan tilordne opptil 100 forskjellige modeller uten å lagre eller skrive inn 100 kopier av samme API-nøkkel.
