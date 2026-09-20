@@ -600,7 +600,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
     let lastError: unknown;
     for (let semanticAttempt = 0; semanticAttempt < 3; semanticAttempt += 1) {
       const body = await this.#completion({
-        defaultMaxTokens: 3_000,
+        // Start lavt: typiske beslutninger er <500 tokens. Ved avskjæring
+        // (finishReason=length) dobles budsjettet automatisk opp til taket,
+        // slik at trege gratismodeller ikke tidsavbryter unødvendig.
+        defaultMaxTokens: 1_024,
         jsonMode: this.#requiresResponsesEndpoint(request.modelId),
         messages: [
           { content: system, role: "system" },
@@ -837,15 +840,24 @@ export class OpenAICompatibleProvider implements ModelProvider {
         statusText: response.statusText,
       });
     } catch (error) {
-      if (upstreamSignal?.aborted === true) {
-        throw new ProviderError("cancelled", "Providerforespørselen ble avbrutt", {
-          cause: error,
-        });
-      }
       if (controller.signal.aborted) {
         throw new ProviderError("timeout", "Providerforespørselen fikk tidsavbrudd", {
           cause: error,
           retryable: true,
+        });
+      }
+      if (upstreamSignal?.aborted === true) {
+        // AI SDK avbryter med DOMException "... timeout ... exceeded" / "TimeoutError"
+        // når dens egen tidsfrist ryker. Det er en timeout, ikke en brukerkansellering.
+        const reason = (upstreamSignal as AbortSignal).reason as { name?: unknown } | undefined;
+        if (reason?.name === "TimeoutError") {
+          throw new ProviderError("timeout", "Providerforespørselen fikk tidsavbrudd", {
+            cause: error,
+            retryable: true,
+          });
+        }
+        throw new ProviderError("cancelled", "Providerforespørselen ble avbrutt", {
+          cause: error,
         });
       }
       throw error;

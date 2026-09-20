@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { ProviderError } from "@ai-lab/providers";
 import { ZodError } from "zod";
 
 export class ApiHttpError extends Error {
@@ -244,6 +245,22 @@ export async function readJsonBody(request: Request, maxBytes = 128_000): Promis
 }
 
 export function errorResponse(error: unknown): Response {
+  if (error instanceof ProviderError) {
+    // Providerfeil har allerede trygge, norske meldinger uten hemmeligheter.
+    // Vis dem videre med riktig status i stedet for generisk 500.
+    const status =
+      error.code === "rate-limited"
+        ? 429
+        : error.code === "timeout" || error.code === "circuit-open"
+          ? 503
+          : error.code === "not-configured"
+            ? 503
+            : 502;
+    return Response.json(
+      { error: error.message },
+      { headers: { "Cache-Control": "no-store" }, status },
+    );
+  }
   const status =
     error instanceof ApiHttpError ? error.status : error instanceof ZodError ? 400 : 500;
   const message =

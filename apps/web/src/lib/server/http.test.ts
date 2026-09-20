@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import { ProviderError } from "@ai-lab/providers";
+
 import {
   ApiPayloadTooLargeError,
   ApiRateLimitError,
@@ -49,6 +51,27 @@ describe("HTTP-grenser", () => {
     const response = errorResponse(new ApiRateLimitError(12));
     expect(response.status).toBe(429);
     expect(response.headers.get("Retry-After")).toBe("12");
+  });
+
+  it("videresender providerfeil med riktig status i stedet for generisk 500", async () => {
+    const timeout = errorResponse(new ProviderError("timeout", "Providerforespørselen fikk tidsavbrudd"));
+    expect(timeout.status).toBe(503);
+    await expect(timeout.json()).resolves.toEqual({
+      error: "Providerforespørselen fikk tidsavbrudd",
+    });
+
+    const rateLimited = errorResponse(new ProviderError("rate-limited", "Midlertidig providerfeil"));
+    expect(rateLimited.status).toBe(429);
+
+    const upstream = errorResponse(
+      new ProviderError("request-failed", "Provideren svarte HTTP 403: FreeTierError", {
+        status: 403,
+      }),
+    );
+    expect(upstream.status).toBe(502);
+    await expect(upstream.json()).resolves.toEqual({
+      error: "Provideren svarte HTTP 403: FreeTierError",
+    });
   });
 
   it("avviser arbeid før en full samtidighetsport", async () => {

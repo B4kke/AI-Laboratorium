@@ -192,7 +192,7 @@ describe("providerpolicy", () => {
         strategy: "adaptive",
       }),
     ).resolves.toMatchObject({ finishReason: "stop" });
-    expect(requestedTokens).toEqual([3_000, 6_000]);
+    expect(requestedTokens).toEqual([1_024, 2_048, 4_096, 8_192]);
   });
 
   it("kaster tydelig feil når svaret forblir avskåret ved maksimalt budsjett", async () => {
