@@ -10,6 +10,12 @@ import { APICallError, generateText as generateSdkText } from "ai";
 import { z } from "zod";
 
 import { ProviderError } from "./errors";
+import {
+  inferModelCapabilities,
+  isResponsesOnlyModel,
+  normalizeModelIdForComparison,
+  stripProviderPrefix,
+} from "./capabilities";
 import type {
   DecisionRequest,
   DecisionResult,
@@ -35,6 +41,26 @@ const ModelsResponseSchema = z
           .passthrough(),
       )
       .max(1_000),
+  })
+  .passthrough();
+
+const ResponsesUsageSchema = z
+  .object({
+    input_tokens: z.number().int().nonnegative().optional(),
+    output_tokens: z.number().int().nonnegative().optional(),
+    total_tokens: z.number().int().nonnegative().optional(),
+  })
+  .passthrough();
+
+const ResponsesResponseSchema = z
+  .object({
+    id: z.string().optional(),
+    model: z.string().optional(),
+    object: z.string().optional(),
+    output: z.array(z.unknown()).optional(),
+    output_text: z.string().optional(),
+    status: z.string().optional(),
+    usage: ResponsesUsageSchema.optional(),
   })
   .passthrough();
 
@@ -252,15 +278,18 @@ export class OpenAICompatibleProvider implements ModelProvider {
         );
         const models = body.data
           .filter(({ id }) => this.#modelFilter?.(id) ?? true)
-          .map(({ id }) => ({
-            displayName: id,
-            endpointFamily: "chat-completions" as const,
-            freeClassification: this.#classifyModel(id),
-            id,
-            providerId: this.id,
-            supportsStructuredOutput: false,
-            supportsTools: false,
-          }));
+          .map(({ id }) => {
+            const capabilities = inferModelCapabilities(id);
+            return {
+              displayName: id,
+              endpointFamily: capabilities.endpointFamily,
+              freeClassification: this.#classifyModel(id),
+              id,
+              providerId: this.id,
+              supportsStructuredOutput: capabilities.supportsStructuredOutput,
+              supportsTools: capabilities.supportsTools,
+            };
+          });
         this.#modelCache = { expiresAt: Date.now() + 5 * 60_000, models };
         this.#modelFailure = undefined;
         return models;
@@ -356,7 +385,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
           ...(init.maxTokens === undefined ? {} : { maxOutputTokens: init.maxTokens }),
           maxRetries: 0,
           messages: init.messages.map(({ content, role }) => ({ content, role })),
-          model: this.#sdkProvider.chatModel(init.modelId),
+          model: this.#sdkProvider.chatModel(stripProviderPrefix(init.modelId)),
           ...(init.temperature === undefined ? {} : { temperature: init.temperature }),
           timeout: remainingMs,
         });
@@ -402,6 +431,157 @@ export class OpenAICompatibleProvider implements ModelProvider {
     });
   }
 
+  #extractResponsesText(response: z.infer<typeof ResponsesResponseSchema>): string {
+    if (typeof response.output_text === "string" && response.output_text.length > 0) {
+      return response.output_text;
+    }
+    const pieces: string[] = [];
+    for (const item of response.output ?? []) {
+      if (typeof item !== "object" || item === null) continue;
+      const record = item as Record<string, unknown>;
+      if (record.type !== "message") continue;
+      const content = record.content;
+      if (!Array.isArray(content)) continue;
+      for (const part of content) {
+        if (typeof part !== "object" || part === null) continue;
+        const chunk = part as Record<string, unknown>;
+        if (chunk.type === "output_text" && typeof chunk.text === "string") {
+          pieces.push(chunk.text);
+        }
+      }
+    }
+    return pieces.join("");
+  }
+
+  #mapResponsesStatus(status: string | undefined): string {
+    if (status === undefined) return "stop";
+    const normalized = status.toLowerCase();
+    if (normalized === "completed") return "stop";
+    if (normalized === "incomplete") return "length";
+    if (normalized === "failed" || normalized === "cancelled") return "error";
+    return normalized;
+  }
+
+  async #requestResponsesOnce(init: {
+    maxTokens?: number | undefined;
+    messages: ReadonlyArray<{ content: string; role: "assistant" | "system" | "user" }>;
+    modelId: string;
+    signal?: AbortSignal | undefined;
+    temperature?: number | undefined;
+    jsonMode?: boolean | undefined;
+  }): Promise<SdkCompletion> {
+    const bareModelId = stripProviderPrefix(init.modelId);
+    const input = init.messages.map(({ content, role }) => ({ content, role }));
+    const body = await this.#requestJson(
+      "/responses",
+      {
+        body: JSON.stringify({
+          input,
+          ...(init.jsonMode === true
+            ? { text: { format: { type: "json_object" } } }
+            : {}),
+          ...(init.maxTokens === undefined ? {} : { max_output_tokens: init.maxTokens }),
+          ...(init.temperature === undefined ? {} : { temperature: init.temperature }),
+          model: bareModelId,
+          store: false,
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      },
+      ResponsesResponseSchema,
+      completionResponseLimitBytes,
+      true,
+      init.signal,
+    );
+    const text = this.#extractResponsesText(body);
+    const finishReason = this.#mapResponsesStatus(body.status);
+    const responseModel = body.model ?? bareModelId;
+    return {
+      finishReason,
+      modelId: responseModel,
+      text,
+      usage: {
+        ...(body.usage?.input_tokens === undefined
+          ? {}
+          : { inputTokens: body.usage.input_tokens }),
+        ...(body.usage?.output_tokens === undefined
+          ? {}
+          : { outputTokens: body.usage.output_tokens }),
+        ...(body.usage?.total_tokens === undefined
+          ? {}
+          : { totalTokens: body.usage.total_tokens }),
+      },
+    };
+  }
+
+  async #responsesCompletion(init: {
+    defaultMaxTokens?: number | undefined;
+    jsonMode?: boolean;
+    messages: ReadonlyArray<{ content: string; role: "assistant" | "system" | "user" }>;
+    modelId: string;
+    onAttempt?: () => void;
+    requestedMaxTokens?: number | undefined;
+    signal?: AbortSignal | undefined;
+    temperature?: number | undefined;
+  }): Promise<SdkCompletion> {
+    const initialMaxTokens = init.requestedMaxTokens ?? init.defaultMaxTokens;
+    let maxTokens =
+      initialMaxTokens === undefined
+        ? undefined
+        : Math.max(64, Math.min(16_384, initialMaxTokens));
+    for (;;) {
+      try {
+        init.onAttempt?.();
+        return await this.#requestResponsesOnce({
+          ...(init.jsonMode === undefined ? {} : { jsonMode: init.jsonMode }),
+          ...(maxTokens === undefined ? {} : { maxTokens }),
+          messages: init.messages,
+          modelId: init.modelId,
+          ...(init.signal === undefined ? {} : { signal: init.signal }),
+          ...(init.temperature === undefined ? {} : { temperature: init.temperature }),
+        });
+      } catch (error) {
+        const tokenLimitRejection =
+          error instanceof ProviderError &&
+          error.status === 400 &&
+          /max[_ ]?tokens|maximum context|context length|max_output_tokens|output_tokens/i.test(
+            error.message,
+          );
+        if (!tokenLimitRejection || (maxTokens ?? 0) <= 512) throw error;
+        maxTokens = Math.floor((maxTokens ?? 1024) / 2);
+        continue;
+      }
+    }
+  }
+
+  #requiresResponsesEndpoint(modelId: string): boolean {
+    if (this.id !== "opencode-zen") return false;
+    return isResponsesOnlyModel(modelId);
+  }
+
+  async #completion(init: {
+    defaultMaxTokens?: number | undefined;
+    jsonMode?: boolean;
+    messages: ReadonlyArray<{ content: string; role: "assistant" | "system" | "user" }>;
+    modelId: string;
+    onAttempt?: () => void;
+    requestedMaxTokens?: number | undefined;
+    signal?: AbortSignal | undefined;
+    temperature?: number | undefined;
+  }): Promise<SdkCompletion> {
+    if (this.#requiresResponsesEndpoint(init.modelId)) {
+      let maxTokens = init.requestedMaxTokens ?? init.defaultMaxTokens;
+      // Muse Spark Free støtter stor output (131k), men beslutninger trenger bare noen tusen.
+      // Doble ved avskjæring opp til 16k; #responsesCompletion håndterer halvering ved 400-feil.
+      for (;;) {
+        const response = await this.#responsesCompletion({ ...init, requestedMaxTokens: maxTokens });
+        if (response.finishReason !== "length" || (maxTokens ?? 0) >= 16_384) return response;
+        maxTokens = Math.min(16_384, (maxTokens ?? 3_000) * 2);
+      }
+    }
+    return this.#chatCompletion(init);
+  }
+
   async generateDecision(request: DecisionRequest): Promise<DecisionResult> {
     if (this.#apiKey === undefined || this.#apiKey.length === 0) {
       throw new ProviderError("not-configured", `${this.id} mangler API-nøkkel`);
@@ -419,8 +599,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
     let requestCount = 0;
     let lastError: unknown;
     for (let semanticAttempt = 0; semanticAttempt < 3; semanticAttempt += 1) {
-      const body = await this.#chatCompletion({
+      const body = await this.#completion({
         defaultMaxTokens: 3_000,
+        jsonMode: this.#requiresResponsesEndpoint(request.modelId),
         messages: [
           { content: system, role: "system" },
           { content: request.prompt, role: "user" },
@@ -477,7 +658,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const model = await this.#findModel(request.modelId);
     assertFreePolicy(model, this.#policy.freeOnly);
     const startedAt = performance.now();
-    const body = await this.#chatCompletion({
+    const body = await this.#completion({
       messages: [
         { content: request.system, role: "system" },
         { content: request.prompt, role: "user" },
@@ -529,6 +710,16 @@ export class OpenAICompatibleProvider implements ModelProvider {
     if (this.#confirmedFreeModelIds.has(id)) {
       return "confirmed-free";
     }
+    const bare = stripProviderPrefix(id);
+    for (const confirmed of this.#confirmedFreeModelIds) {
+      if (normalizeModelIdForComparison(confirmed) === normalizeModelIdForComparison(id)) {
+        return "confirmed-free";
+      }
+    }
+    // Zen: bar ID som slutter på -free er eksplisitt gratis merket.
+    if (bare.toLowerCase().endsWith("-free")) {
+      return this.#modelClassifier?.(id) ?? this.#modelClassifier?.(bare) ?? "confirmed-free";
+    }
     return this.#modelClassifier?.(id) ?? "unknown";
   }
 
@@ -538,7 +729,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 
   #assertModelIdentity(actual: string | undefined, expected: string) {
-    if (actual === undefined || actual === expected) return;
+    if (actual === undefined) return;
+    if (normalizeModelIdForComparison(actual) === normalizeModelIdForComparison(expected)) return;
     this.#recordFailure();
     throw new ProviderError(
       "invalid-response",
@@ -547,7 +739,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 
   async #findModel(modelId: string) {
-    const model = (await this.listModels()).find(({ id }) => id === modelId);
+    const models = await this.listModels();
+    const wanted = normalizeModelIdForComparison(modelId);
+    const model = models.find(
+      ({ id }) => id === modelId || normalizeModelIdForComparison(id) === wanted,
+    );
     if (model === undefined) {
       throw new ProviderError("request-failed", `Modellen ${modelId} finnes ikke i dagens katalog`);
     }

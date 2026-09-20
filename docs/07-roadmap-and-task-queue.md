@@ -460,6 +460,12 @@ Add new seed, side swap, Best-of-N, save template, compare and `Evolve this setu
 
 Verify Playground and live duel at narrow viewport, touch behavior and no overflow before expanding the dashboard.
 
+### Implementasjonsbevis per 2026-09-20 — Nemotron + Muse Spark Free
+
+- **NVIDIA NIM Nemotron (live-verifisert):** `nvidia/nemotron-3.5-lightning-30b-a3b` funnet i live `/models` (80 modeller, 17 Nemotron), `captureSnapshot` gir `endpointFamily: chat-completions`, `supportsStructuredOutput/tools: true`, `freeClassification: confirmed-free` når ID-en står i `NVIDIA_CONFIRMED_FREE_MODELS`. Safety/embed/parse/reward får `false`/`false`.
+- **OpenCode Zen Muse Spark Free:** `muse-spark-1.3-contributor-free` (med/uten `opencode/`-prefiks) klassifiseres som `confirmed-free` med `endpointFamily: responses`, `supportsStructuredOutput/tools: true`. Adapteren ruter Muse automatisk til `/responses` (`store: false`, `max_output_tokens`, `text.format: json_object` for beslutninger) siden chat-completions gir HTTP 500 for disse. `input_tokens`/`output_tokens`/`total_tokens`, `finishReason` (`completed`→`stop`, `incomplete`→`length`) og `requestCount` normaliseres til samme kontrakt som chat. Zen Nemotron Free (`nemotron-3.5-lightning-free`) forblir på chat-completions.
+- **Tester:** `packages/providers/src/responses.test.ts` (8 tester) + `providers.test.ts` (17 tester) = 89 tester grønne totalt. `pnpm verify` + `audit` rene, live NIM-smoke via `createNvidiaNimProvider` grønn. Zen Muse live-smoke krever `OPENCODE_ZEN_API_KEY` (ikke konfigurert i dette miljøet) og er dekket med mockete Responses-tester.
+
 ## Do not start yet
 
 Until the P1 loop works, avoid:

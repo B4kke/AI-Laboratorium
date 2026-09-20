@@ -11,6 +11,17 @@ export type NvidiaNimProviderOptions = {
 
 const deprecatedModelFamilies = /deepseek|qwen/i;
 
+/**
+ * NVIDIA NIM via https://integrate.api.nvidia.com/v1 (OpenAI-kompatibel).
+ *
+ * Anbefalte Nemotron-modeller (bekreft gratis-status for egen konto før bruk):
+ * - nvidia/nemotron-3.5-lightning-30b-a3b
+ * - nvidia/nemotron-nano-3-30b-a3b
+ * - nvidia/nemotron-3-super-120b-a12b
+ * - nvidia/nemotron-3-ultra-550b-a55b
+ * Legg valgte ID-er i NVIDIA_CONFIRMED_FREE_MODELS; katalogen oppgir ikke pris.
+ */
+
 export function createNvidiaNimProvider(options: NvidiaNimProviderOptions = {}) {
   const modelFilter =
     options.modelFilter ?? ((modelId: string) => !deprecatedModelFamilies.test(modelId));
