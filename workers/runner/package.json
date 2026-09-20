@@ -1,0 +1,18 @@
+{
+  "name": "@ai-lab/runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "demo": "tsx src/demo.ts",
+    "worker": "tsx src/worker.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-lab/agents": "workspace:*",
+    "@ai-lab/db": "workspace:*",
+    "@ai-lab/domain": "workspace:*",
+    "@ai-lab/evolution": "workspace:*",
+    "@ai-lab/providers": "workspace:*"
+  }
+}

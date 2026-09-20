@@ -1,0 +1,17 @@
+{
+  "name": "@ai-lab/evolution",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "typecheck": "tsc --noEmit" },
+  "dependencies": {
+    "@ai-lab/agents": "workspace:*",
+    "@ai-lab/arena": "workspace:*",
+    "@ai-lab/domain": "workspace:*",
+    "@ai-lab/evaluation": "workspace:*",
+    "@ai-lab/events": "workspace:*",
+    "@ai-lab/providers": "workspace:*",
+    "zod": "^4.3.6"
+  }
+}

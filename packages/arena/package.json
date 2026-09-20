@@ -1,0 +1,13 @@
+{
+  "name": "@ai-lab/arena",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "typecheck": "tsc --noEmit" },
+  "dependencies": {
+    "@ai-lab/domain": "workspace:*",
+    "@ai-lab/events": "workspace:*",
+    "@ai-lab/providers": "workspace:*"
+  }
+}
